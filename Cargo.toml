@@ -1,0 +1,19 @@
+[package]
+name = "gdrivefs"
+version = "0.1.0"
+authors = ["jonallie"]
+
+[dependencies]
+docopt = "*"
+env_logger = "*"
+fuse = { git = "https://github.com/zargony/rust-fuse" }
+google-drive2 = "*"
+hyper = "*"
+inth-oauth2 = "*"
+libc = "0.2"
+log = "0.3"
+lru_time_cache = "*"
+rustc-serialize = "*"
+time = "0.1"
+urlparse = "*"
+yup-oauth2 = "*"
