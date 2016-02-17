@@ -13,27 +13,6 @@ use gdrivefs::constants;
 use gdrivefs::oauth;
 
 
-const USAGE: &'static str = "
-init_token: fetch and store an oauth2 token for gdrivefs.
-
-Usage:
-  init_token --client-id-file=<id_file> --client-secret-file=<secret_file> --token-file=<token_file>  [--port=<port>]
-
-Options:
-  --client-id-file=<id_file>          File containing a client id [default: '$HOME/.gdrive_id']
-  --client-secret-file=<secret_file>  File containing a client secret. [default: $HOME/.gdrive_secret]
-  --token-file=<token_file>           Token output file. [default: $HOME/.gdrive_token]
-  --port=<port>                       Port on which to listen for redirects. [default: 8080]
-";
-
-#[derive(Debug, RustcEncodable, RustcDecodable)]
-struct Args {
-  flag_client_id_file: String,
-  flag_client_secret_file: String,
-  flag_token_file: String,
-  flag_port: u16,
-}
-
 fn fetch_oauth_token(client: &mut inth_oauth2::client::Client<inth_oauth2::provider::Google>,
                      port: u16)
                      -> inth_oauth2::token::Bearer<inth_oauth2::token::Expiring> {
@@ -72,6 +51,27 @@ fn fetch_oauth_token(client: &mut inth_oauth2::client::Client<inth_oauth2::provi
   token_result
 }
 
+const USAGE: &'static str = "
+init_token: fetch and store an oauth2 token for gdrivefs.
+
+Usage:
+  init_token --client-id-file=<id_file> --client-secret-file=<secret_file> --token-file=<token_file>  [--port=<port>]
+
+Options:
+  --client-id-file=<id_file>          File containing a client id [default: '$HOME/.gdrive_id']
+  --client-secret-file=<secret_file>  File containing a client secret. [default: $HOME/.gdrive_secret]
+  --token-file=<token_file>           Token output file. [default: $HOME/.gdrive_token]
+  --port=<port>                       Port on which to listen for redirects. [default: 8080]
+";
+
+#[derive(Debug, RustcEncodable, RustcDecodable)]
+struct Args {
+  flag_client_id_file: String,
+  flag_client_secret_file: String,
+  flag_token_file: String,
+  flag_port: u16,
+}
+
 fn main() {
   let args: Args = docopt::Docopt::new(USAGE).and_then(|d| d.decode()).unwrap_or_else(|e| e.exit());
   println!("Client id = {}, secret = {}, output file = {}, port = {}",
@@ -83,17 +83,7 @@ fn main() {
     &common::get_contents(&args.flag_client_id_file).unwrap(),
     &common::get_contents(&args.flag_client_secret_file).unwrap(),
     Some(format!("http://localhost:{}/oauth_redirect", args.flag_port)));
-/*
-  let mut client = inth_oauth2::Client::<inth_oauth2::provider::Google>::new(
-    common::get_contents(&args.flag_client_id_file).unwrap(),
-    common::get_contents(&args.flag_client_secret_file).unwrap(),
-    Some(format!("http://localhost:{}/oauth_redirect", args.flag_port)));
-*/
   let token = fetch_oauth_token(&mut client, args.flag_port);
   oauth::save_token(&args.flag_token_file, &token).unwrap();
   println!("Saved token in {}", args.flag_token_file);
-  //let encoded = rustc_serialize::json::encode(&token).unwrap();
-  //common::set_contents(&args.flag_token_file, encoded.as_bytes()).unwrap();
-
-  //let authenticator = oauth::GoogleAuthenticator::new(client, token);
 }
