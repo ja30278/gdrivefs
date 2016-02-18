@@ -512,67 +512,101 @@ impl fuse::Filesystem for GDriveFS {
         // 2mb chunks gets us 512 blocks per http request.
         let chunk_size : u64 = 4096 * read_block_multiplier as u64;
         'receive: loop {
-          match rx.try_recv() {
-            // we got a new request for data.
-            Ok(req) => {
-              debug!("got new read request for url: {}, offset : {}", url, req.offset);
-              let chunk_offset = (req.offset / chunk_size) * chunk_size;
-              if (req.offset + req.size as u64) > (chunk_offset + chunk_size) {
-                error!("cross chunk read not supported");
-                req.reply.error(libc::ENOSYS);
+          // wait for new requests
+          let req = match rx.try_recv() {
+              // new request is ready.
+              Ok(req) => { req },
+              // no request waiting
+              Err(sync::mpsc::TryRecvError::Empty) => {
+                  // if we have readahead to do, do it until we get a request.
+                  let mut req : Option<FileReadRequest> = None;
+                  while let Some(offset) = readahead.pop_front() {
+                      if block_cache.contains_key(&offset) { continue; }
+                      match reader.read_bytes(offset, chunk_size) {
+                          Ok(data) => { block_cache.insert(offset, data); },
+                          Err(err) => {
+                              warn!("read error on readahead: {:?}", err);
+                          }
+                      }
+                      // if a new request is available, stop doing readahead.
+                      match rx.try_recv() {
+                          Ok(new_req) => {
+                              req = Some(new_req);
+                              break;
+                          },
+                          Err(sync::mpsc::TryRecvError::Disconnected) => {
+                              info!("exiting read thread for {} after channel close", url);
+                              return;
+                          },
+                          Err(_) => { }, // still nothing
+                      }
+                  }
+                  // done with readahead.
+                  // if we were interrupted by a request, return it now, otherwise just block until
+                  // a request is available, or our channel is closed.
+                  let ret_req = match req {
+                      Some(req) => { req },
+                      None => {
+                          match rx.recv() {
+                              Ok(new_req) => { new_req },
+                              Err(err) => {
+                                  info!("Exiting read thread for {} on channel recv error: {:?}", url, err);
+                                  return;
+                              }
+                          }
+                      }
+                  };
+                  ret_req
+              },
+              Err(sync::mpsc::TryRecvError::Disconnected) => {
+                  info!("exiting read thread for {} after channel close.", url);
+                  return;
+              }
+          };
+
+          debug!("got new read request for url: {}, offset : {}", url, req.offset);
+          let chunk_offset = (req.offset / chunk_size) * chunk_size;
+          if (req.offset + req.size as u64) > (chunk_offset + chunk_size) {
+            error!("cross chunk read not supported");
+            req.reply.error(libc::ENOSYS);
+            continue 'receive;
+          }
+          if !block_cache.contains_key(&chunk_offset) {
+            // cache miss. Either our readahead isn't keeping up, or we're
+            // seeking within the file. Either way, we can clear the readahead
+            // queue.
+            debug!("file: {}, cache miss, clearing readahead", url);
+            readahead.clear();
+            match reader.read_bytes(chunk_offset, chunk_size) {
+              Ok(data) => {
+                debug!("read {} bytes of data from url {}", data.len(), url);
+                block_cache.insert(chunk_offset, data);
+              },
+              Err(err) => {
+                error!("Read error for file: {} : {:?}", url, err);
+                req.reply.error(libc::EIO);
                 continue 'receive;
               }
-              if !block_cache.contains_key(&chunk_offset) {
-                // cache miss. Either our readahead isn't keeping up, or we're
-                // seeking within the file. Either way, we can clear the readahead
-                // queue.
-                debug!("file: {}, cache miss, clearing readahead", url);
-                readahead.clear();
-                match reader.read_bytes(chunk_offset, chunk_size) {
-                  Ok(data) => {
-                    debug!("read {} bytes of data from url {}", data.len(), url);
-                    block_cache.insert(chunk_offset, data);
-                  },
-                  Err(err) => {
-                    error!("Read error for file: {} : {:?}", url, err);
-                    req.reply.error(libc::EIO);
-                    continue 'receive;
-                  }
-                }
-              }
+            }
+          }
+          {
+              // scope for borrow of block cache values.
               let chunk_data: &Vec<u8> = block_cache.get(&chunk_offset).unwrap();
               let start: usize = (req.offset - chunk_offset) as usize;
               let end: usize = start + req.size as usize;
               let slice = &chunk_data[start..end];
               req.reply.data(slice);
+          }
 
-              // schedule readaheads
-              let mut readahead_offset = chunk_offset + chunk_size;
-              while readahead.len() < readahead_queue_size  {
-                debug!("file: {}, scheduling readahead for offset {}",
-                       url,
-                       readahead_offset);
+          // schedule readaheads
+          let mut readahead_offset = chunk_offset + chunk_size;
+          for _ in 0..readahead_queue_size {
+              if !block_cache.contains_key(&readahead_offset) {
+                debug!("file: {}, scheduling readahead for offset {}", url, readahead_offset);
                 readahead.push_back(readahead_offset);
-                readahead_offset += chunk_size;
               }
-            },
-            // No request available to receive. Do readahead, if needed.
-            Err(sync::mpsc::TryRecvError::Empty) => {
-              while let Some(offset) = readahead.pop_front() {
-                if block_cache.contains_key(&offset) { continue; }
-                debug!("doing readahead for file: {} at offset {}", url, offset);
-                if let Ok(data) = reader.read_bytes(offset, chunk_size) {
-                  block_cache.insert(offset, data);
-                }
-                break;
-              }
-            },
-            // channel closed, or fail to recv();
-            Err(sync::mpsc::TryRecvError::Disconnected) => {
-              info!("exiting read thread for {} after channel close.", url);
-              return;
-            }
-          };
+              readahead_offset += chunk_size;
+          }
         }
       });
       FileReadHandle {
@@ -673,7 +707,7 @@ Options:
   --dir-poll-secs=<poll-secs>         Seconds between directory refresh scans, or 0 to disable. [default: 30]
   --readahead-queue-size=<size>       Size of the readahead queue (per-file, in number of chunks). [default: 10]
   --file-read-cache-blocks=<size>     Capacity of the per-file chunk cache (in number of chunks) Should be larger than readahead-queue-size. [default: 40]
-  --read-block-multiplier=<mult>      Number of 4k blocks to read per HTTP request. [default: 256]
+  --read-block-multiplier=<mult>      Number of 4k blocks to read per HTTP request. [default: 1024]
 ";
 
 #[derive(Debug, RustcDecodable)]

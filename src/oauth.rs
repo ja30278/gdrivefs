@@ -1,4 +1,5 @@
 extern crate hyper;
+extern crate log;
 extern crate inth_oauth2;
 extern crate rustc_serialize;
 extern crate yup_oauth2;
@@ -56,9 +57,14 @@ impl GoogleAuthenticatorImpl {
   }
 
   fn ensure_token(&mut self) {
-    self.inth_token = self.oauth_client
-                          .ensure_token(&self.http_client, self.inth_token.clone())
-                          .unwrap();
+    match self.oauth_client.ensure_token(&self.http_client, self.inth_token.clone()) {
+        Ok(token) => {
+            self.inth_token = token;
+        },
+        Err(err) => {
+            warn!("token refresh error: {:?}", err);
+        }
+    }
   }
 
   pub fn get_token(&mut self) -> &GoogleToken {
