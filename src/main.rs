@@ -279,6 +279,7 @@ struct Options {
 struct GDriveFS {
   authenticator: oauth::GoogleAuthenticator,
   file_tree: sync::Arc<sync::RwLock<GoogleFileTree>>,
+  // map of gfileid -> file read handle
   read_handles: sync::Mutex<HashMap<String, FileReadHandle>>,
   options: Options,
 }
@@ -299,11 +300,12 @@ impl GDriveFS {
     let tree = self.file_tree.clone();
     thread::spawn(move || {
       let mut queue: VecDeque<String> = VecDeque::new();
+      queue.push_back(ROOT_ID.into());
       let mut hub = google_drive2::Drive::new(hyper::client::Client::new(), auth);
       loop {
         if queue.is_empty() {
           queue.push_back(ROOT_ID.into());
-          debug!("starting auto refresh at root node");
+          thread::sleep(interval);
         }
         if let Some(id) = queue.pop_front() {
           debug!("refreshing dir id {}", id);
@@ -322,8 +324,9 @@ impl GDriveFS {
               warn!("list_drive_dir: {:?}", err);
             }
           }
+          // avoid rate limits
+          thread::sleep(std::time::Duration::from_millis(500));
         }
-        thread::sleep(interval);
       }
     });
   }
@@ -365,14 +368,8 @@ impl fuse::Filesystem for GDriveFS {
     }
   }
 
-  fn readdir(&mut self,
-             _req: &fuse::Request,
-             ino: u64,
-             _fh: u64,
-             offset: u64,
-             mut reply: fuse::ReplyDirectory) {
+  fn readdir(&mut self, _req: &fuse::Request, ino: u64, _fh: u64, offset: u64, mut reply: fuse::ReplyDirectory) {
     debug!("readdir(ino:{}, offset:{})", ino, offset);
-    // todo(jonallie): fix offsets
     let mut dir_fileid: Option<String> = None;
     {
       let tree = self.file_tree.read().unwrap();
@@ -481,21 +478,26 @@ impl fuse::Filesystem for GDriveFS {
   fn open(&mut self, _req: &fuse::Request, ino: u64, _flags: u32, reply: fuse::ReplyOpen) {
     debug!("open for inode {}", ino);
     let mut download_url: Option<String> = None;
+    let mut gfileid: Option<String> = None;
     {
       let tree = self.file_tree.read().unwrap();
-      match tree.get_file_id(ino).and_then(|fileid| tree.get_file(fileid)) {
-        Some(attr) => {
-          download_url = attr.download_url.clone();
-        }
-        None => {
-          reply.error(libc::ENOENT);
-          return;
+      match tree.get_file_id(ino).and_then(|fileid| {
+        gfileid = Some(fileid.clone());
+        tree.get_file(fileid)
+        }) {
+          Some(attr) => {
+            download_url = attr.download_url.clone();
+          }
+          None => {
+            reply.error(libc::ENOENT);
+            return;
         }
       }
     }  // end tree scope
     let download_url = download_url.unwrap();
+    let gfileid = gfileid.unwrap();
     let mut reader_map = self.read_handles.lock().unwrap();
-    let handle = reader_map.entry(download_url.clone()).or_insert_with(|| {
+    let handle = reader_map.entry(gfileid.clone()).or_insert_with(|| {
       let mut auth = self.authenticator.clone();
       let (tx, rx) = sync::mpsc::channel::<FileReadRequest>();
       let url = download_url.clone();
@@ -618,71 +620,54 @@ impl fuse::Filesystem for GDriveFS {
     reply.opened(0, 0);
   }
 
-  fn release(&mut self,
-             _req: &fuse::Request,
-             ino: u64,
-             _fh: u64,
-             _flags: u32,
-             _lock_owner: u64,
-             _flush: bool,
-             reply: fuse::ReplyEmpty) {
+  fn release(&mut self, _req: &fuse::Request, ino: u64, _fh: u64, _flags: u32,
+             _lock_owner: u64, _flush: bool, reply: fuse::ReplyEmpty) {
     debug!("release: inode({})", ino);
-    let mut download_url: String;
+    let mut fileid: Option<String> = None;
     {
       let tree = self.file_tree.read().unwrap();
-      if let Some(url) = tree.get_file_id(ino)
-                             .and_then(|fileid| tree.get_file(fileid))
-                             .and_then(|attr| attr.download_url.clone()) {
-        download_url = url.clone();
-      } else {
+      fileid = tree.get_file_id(ino).cloned();
+      if fileid.is_none() {
         warn!("Release called for unknown inode: {}", ino);
         reply.ok();
         return;
       }
     }
+    let fileid = fileid.unwrap();
     let mut handles = self.read_handles.lock().unwrap();
-    if let Some(mut handle) = handles.remove(&download_url) {
+    if let Some(mut handle) = handles.remove(&fileid) {
       handle.open_count -= 1;
       if handle.open_count > 0 {
-        handles.insert(download_url.clone(), handle);
+        handles.insert(fileid, handle);
       }
     } else {
-      warn!("no open handle found for file: {}", download_url);
+      warn!("no open handle found for inode: {}", ino);
     }
     reply.ok();
   }
 
-  fn read(&mut self,
-          _req: &fuse::Request,
-          ino: u64,
-          _fh: u64,
-          offset: u64,
-          size: u32,
-          reply: fuse::ReplyData) {
+  fn read(&mut self, _req: &fuse::Request, ino: u64, _fh: u64, offset: u64,
+          size: u32, reply: fuse::ReplyData) {
     debug!("read: inode({})", ino);
-    let mut download_url: Option<String> = None;
+    let mut fileid: Option<String> = None;
     {
       let tree = self.file_tree.read().unwrap();
-      download_url = tree.get_file_id(ino)
-                         .and_then(|fileid| tree.get_file(fileid))
-                         .and_then(|attr| attr.download_url.clone());
-      if download_url.is_none() {
+      fileid = tree.get_file_id(ino).cloned();
+      if fileid.is_none() {
         reply.error(libc::ENOENT);
         return;
       }
     }
-    debug!("Found download url: {:?}", download_url);
     let handle_map = self.read_handles.lock().unwrap();
-    match handle_map.get(download_url.as_ref().unwrap()) {
+    match handle_map.get(fileid.as_ref().unwrap()) {
       Some(handle) => {
-        handle.read_chan
-              .send(FileReadRequest {
+        handle.read_chan.send(
+              FileReadRequest {
                 offset: offset,
                 size: size,
                 reply: reply,
-              })
-              .unwrap();
-        debug!("send read request for url: {}", download_url.as_ref().unwrap());
+              }).unwrap();
+        debug!("send read request for inode: {}", ino);
       }
       None => {
         error!("no download thread found");
@@ -704,7 +689,7 @@ Options:
   --client-secret-file=<secret_file>  Path to a file containing the oauth2 client secret. [default: /etc/gdrive_secret]
   --token-file=<token_file>           Path to a file containing a oauth token (generated by init_token). [default: /etc/gdrive_token]
   --allow-other                       If true, allow non-root users to access the mounted filesystem.
-  --dir-poll-secs=<poll-secs>         Seconds between directory refresh scans, or 0 to disable. [default: 30]
+  --dir-poll-secs=<poll-secs>         Seconds between directory refresh scans, or 0 to disable. [default: 900]
   --readahead-queue-size=<size>       Size of the readahead queue (per-file, in number of chunks). [default: 10]
   --file-read-cache-blocks=<size>     Capacity of the per-file chunk cache (in number of chunks) Should be larger than readahead-queue-size. [default: 40]
   --read-block-multiplier=<mult>      Number of 4k blocks to read per HTTP request. [default: 1024]
