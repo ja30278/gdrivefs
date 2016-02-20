@@ -9,9 +9,10 @@ use std::default::Default;
 use std::str::FromStr;
 use urlparse::GetQuery;
 use gdrivefs::common;
-use gdrivefs::constants;
 use gdrivefs::oauth;
 
+// see: https://developers.google.com/identity/protocols/googlescopes
+const DRIVE_SCOPE : &'static str = "https://www.googleapis.com/auth/drive";
 
 fn fetch_oauth_token(client: &mut inth_oauth2::client::Client<inth_oauth2::provider::Google>,
                      port: u16)
@@ -58,9 +59,9 @@ Usage:
   init_token --client-id-file=<id_file> --client-secret-file=<secret_file> --token-file=<token_file>  [--port=<port>]
 
 Options:
-  --client-id-file=<id_file>          File containing a client id [default: '$HOME/.gdrive_id']
-  --client-secret-file=<secret_file>  File containing a client secret. [default: $HOME/.gdrive_secret]
-  --token-file=<token_file>           Token output file. [default: $HOME/.gdrive_token]
+  --client-id-file=<id_file>          File containing a client id [default: /etc/gdrive_id]
+  --client-secret-file=<secret_file>  File containing a client secret. [default: /etc/gdrive_secret]
+  --token-file=<token_file>           Token output file. [default: /etc/gdrive_token]
   --port=<port>                       Port on which to listen for redirects. [default: 8080]
 ";
 
