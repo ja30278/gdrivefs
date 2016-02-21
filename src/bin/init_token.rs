@@ -8,7 +8,6 @@ extern crate urlparse;
 use std::default::Default;
 use std::str::FromStr;
 use urlparse::GetQuery;
-use gdrivefs::common;
 use gdrivefs::oauth;
 
 // see: https://developers.google.com/identity/protocols/googlescopes
@@ -42,7 +41,7 @@ fn fetch_oauth_token(client: &mut inth_oauth2::client::Client<inth_oauth2::provi
                        })
                        .unwrap();
   println!("Visit URL to authorize");
-  let auth_uri = client.auth_uri(Some(constants::DRIVE_SCOPE), None).unwrap();
+  let auth_uri = client.auth_uri(Some(DRIVE_SCOPE), None).unwrap();
   println!("{}", auth_uri);
   let code = rx.recv().unwrap();
   listener.close().unwrap();
@@ -81,8 +80,8 @@ fn main() {
            &args.flag_token_file,
            &args.flag_port);
   let mut client = oauth::new_google_client(
-    &common::get_contents(&args.flag_client_id_file).unwrap(),
-    &common::get_contents(&args.flag_client_secret_file).unwrap(),
+    &gdrivefs::get_contents(&args.flag_client_id_file).unwrap(),
+    &gdrivefs::get_contents(&args.flag_client_secret_file).unwrap(),
     Some(format!("http://localhost:{}/oauth_redirect", args.flag_port)));
   let token = fetch_oauth_token(&mut client, args.flag_port);
   oauth::save_token(&args.flag_token_file, &token).unwrap();
