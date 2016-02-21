@@ -7,7 +7,7 @@ authors = ["jonallie"]
 docopt = "0.6"
 env_logger = "0.3"
 fuse = { git = "https://github.com/zargony/rust-fuse" }
-google-drive2 = "0.1"
+google-drive3 = "*"
 hyper = "0.7"
 inth-oauth2 = "0.7"
 libc = "0.2"
