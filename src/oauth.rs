@@ -99,7 +99,7 @@ impl GoogleAuthenticator {
   pub fn start_auto_save(&self, path: &str, interval : std::time::Duration) {
     let auth = self.clone();
     let save_path = String::from(path);
-    thread::spawn(move|| { 
+    thread::Builder::new().name(String::from("save_auth_token")).spawn(move|| { 
       loop {
         match auth.save_to_file(&save_path) {
           Ok(_) => { info!("saved token to file: {}", save_path); },
@@ -107,7 +107,7 @@ impl GoogleAuthenticator {
         }
         std::thread::sleep(interval);
       }
-    });
+    }).unwrap();
   }
   pub fn get_token(&self) -> GoogleToken {
     let mut auth_impl = self.auth_impl.lock().unwrap();

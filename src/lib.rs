@@ -211,7 +211,7 @@ fn list_gdrive_dir(gfile_id: &str, hub: &mut DriveHub) -> Result<Vec<GoogleFile>
   Ok(file_vec)
 }
 
-/// GDriveFS is a fuse filesytem backed by Google drive
+/// GDriveFS is a fuse filesytem backed by Google drive.
 pub struct GDriveFS {
   authenticator: oauth::GoogleAuthenticator,
   file_tree: sync::Arc<sync::RwLock<GoogleFileTree>>,
@@ -221,6 +221,8 @@ pub struct GDriveFS {
 }
 
 impl GDriveFS {
+  /// Create a new GDriveFS using `auth` to provide authentication, and `options`
+  /// to control the properties of file reads.
   pub fn new(auth: oauth::GoogleAuthenticator, options: FileReadOptions) -> GDriveFS {
     GDriveFS {
       authenticator: auth,
@@ -231,11 +233,11 @@ impl GDriveFS {
   }
 
   /// Starts a background thread that will periodically refresh filesystem
-  /// metadata at |interval|.
+  /// metadata at |interval|. 
   pub fn start_auto_refresh(&self, interval: std::time::Duration) {
     let auth = self.authenticator.clone();
     let tree = self.file_tree.clone();
-    thread::spawn(move || {
+    thread::Builder::new().name(String::from("dir_refresh")).spawn(move || {
       let mut queue: VecDeque<String> = VecDeque::new();
       queue.push_back(ROOT_ID.into());
       let mut hub = google_drive3::Drive::new(hyper::client::Client::new(), auth);
@@ -265,7 +267,7 @@ impl GDriveFS {
           thread::sleep(std::time::Duration::from_millis(500));
         }
       }
-    });
+    }).unwrap();
   }
 }
 
@@ -411,11 +413,6 @@ impl fuse::Filesystem for GDriveFS {
     }
   }
 
-  // handle fuse::open.
-  // the basic strategy here is to spawn a thread for each file opened to handle reads
-  // for that file. Subsequent opens() for the same file increment the count of openers
-  // on the read handle, and the last release closes the transmission channel and the
-  // read thread exits.
   fn open(&mut self, _req: &fuse::Request, ino: u64, _flags: u32, reply: fuse::ReplyOpen) {
     debug!("open for inode {}", ino);
     let mut download_url: Option<String> = None;

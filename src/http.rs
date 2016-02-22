@@ -56,10 +56,22 @@ impl RangeReader {
   }
 }
 
+/// Options that control files reads from Google Drive
 #[derive(Debug, Clone)]
 pub struct FileReadOptions {
+  /// The size of the (per-file) readahead queue. A value of `0` disables
+  /// readahead. Note that this value should always be smaller than
+  /// `file_read_cache_blocks`, to prevent later readahead blocks from
+  /// pushing earlier blocks from the cache before they can be used.
   pub readahead_queue_size: usize,
+
+  /// The size of the per-file read cache (in number of blocks, where
+  /// the block size is determined by `read_block_muliplier`. see below).
   pub file_read_cache_blocks: usize,
+
+  /// The multiplier of the block size (usually 4096) to read in each HTTP
+  /// request to Google Drive. For example, a value of 1024 here would
+  /// cause files to be retrieved in 4MB chunks.
   pub read_block_multiplier: u32,
 }
 
@@ -110,7 +122,7 @@ impl FileReadHandle {
         let readahead_queue_size = options.readahead_queue_size;
         let read_block_multiplier = options.read_block_multiplier;
         let (tx, rx) = sync::mpsc::channel::<FileReadRequest>();
-        thread::spawn(move || {
+        thread::Builder::new().name(url.clone()).spawn(move || {
             // cache of offset -> data block at that offset.
             let mut block_cache: lru_time_cache::LruCache<u64, Vec<u8>> =
                 lru_time_cache::LruCache::with_capacity(cache_size);
@@ -220,7 +232,7 @@ impl FileReadHandle {
                 }
             }
 
-        });
+        }).unwrap();
         // return the read handle.
         FileReadHandle{read_chan: tx, open_count: 1}
     }
