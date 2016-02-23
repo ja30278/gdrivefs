@@ -102,12 +102,14 @@ impl FileReadHandle {
     /// increase the reference count of the handle.
     pub fn incref(&mut self) {
         self.open_count += 1;
+        debug!("after increment, open_count = {}", self.open_count);
     }
 
     /// decrease the reference count of the handle, returning the
     /// handle if it's still active.
     pub fn decref(mut self) -> Option<FileReadHandle> {
         self.open_count -= 1;
+        debug!("after decrement, open_count = {}", self.open_count);
         match self.open_count {
             0 =>  None,
             _ => Some(self)
@@ -115,6 +117,7 @@ impl FileReadHandle {
     }
 
     /// creates a new FileReadHandle to read data from |url| in a background thread. 
+    /// The returned read handle has a refcount of '0', and should be `incref()`d before use.
     pub fn spawn(url: &str, auth: &oauth::GoogleAuthenticator, options: &FileReadOptions) -> FileReadHandle {
         let url = String::from(url);
         let auth = auth.clone();
@@ -143,7 +146,10 @@ impl FileReadHandle {
                     Ok(req) => { req },
 
                     // channel was closed, we can exit.
-                    Err(sync::mpsc::TryRecvError::Disconnected) => { return; }
+                    Err(sync::mpsc::TryRecvError::Disconnected) => {
+                        debug!("exiting read thread on disconnect");
+                        return;
+                    }
 
                     // no request was ready, but we're still active.
                     Err(sync::mpsc::TryRecvError::Empty) => {
@@ -163,7 +169,10 @@ impl FileReadHandle {
                                     break;
                                 }
                                 // disconnected, exit
-                                Err(sync::mpsc::TryRecvError::Disconnected) => { return; }
+                                Err(sync::mpsc::TryRecvError::Disconnected) => {
+                                    debug!("exiting read thread on disconnect");
+                                    return;
+                                }
 
                                 // still empty
                                 Err(_) => { }
@@ -176,7 +185,10 @@ impl FileReadHandle {
                                 //  otherwise we can block until one comes in
                                 match rx.recv() {
                                     Ok(req) => { req }
-                                    Err(_) => { return; }
+                                    Err(_) => {
+                                        debug!("exiting read thread on disconnect");
+                                        return;
+                                    }
                                 }
                             }
                         };
@@ -186,7 +198,6 @@ impl FileReadHandle {
                 };
                 
                 // handle the new request.
-                debug!("got new read request for url: {}, offset : {}", url, req.offset);
                 // calculate the offset of the chunk for this read.
                 let chunk_offset = (req.offset / chunk_size) * chunk_size;
                 if (req.offset + req.size as u64) > (chunk_offset + chunk_size) {
@@ -234,6 +245,6 @@ impl FileReadHandle {
 
         }).unwrap();
         // return the read handle.
-        FileReadHandle{read_chan: tx, open_count: 1}
+        FileReadHandle{read_chan: tx, open_count: 0}
     }
 }

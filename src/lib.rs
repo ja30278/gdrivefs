@@ -450,7 +450,7 @@ impl fuse::Filesystem for GDriveFS {
 
   fn release(&mut self, _req: &fuse::Request, ino: u64, _fh: u64, _flags: u32,
              _lock_owner: u64, _flush: bool, reply: fuse::ReplyEmpty) {
-    debug!("release: inode({})", ino);
+    info!("release: inode({})", ino);
     let mut fileid: Option<String> = None;
     {
       let tree = self.file_tree.read().unwrap();
@@ -475,7 +475,6 @@ impl fuse::Filesystem for GDriveFS {
 
   fn read(&mut self, _req: &fuse::Request, ino: u64, _fh: u64, offset: u64,
           size: u32, reply: fuse::ReplyData) {
-    debug!("read: inode({})", ino);
     let mut fileid: Option<String> = None;
     {
       let tree = self.file_tree.read().unwrap();
@@ -489,7 +488,6 @@ impl fuse::Filesystem for GDriveFS {
     match handle_map.get(fileid.as_ref().unwrap()) {
       Some(handle) => {
         handle.do_read(offset, size, reply);
-        debug!("send read request for inode: {}", ino);
       }
       None => {
         error!("no download thread found");

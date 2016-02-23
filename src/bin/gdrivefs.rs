@@ -34,7 +34,7 @@ Options:
   --allow-other                       If true, allow non-root users to access the mounted filesystem.
   --dir-poll-secs=<poll-secs>         Seconds between directory refresh scans, or 0 to disable. [default: 900]
   --readahead-queue-size=<size>       Size of the readahead queue (per-file, in number of chunks), or 0 to disable. [default: 0]
-  --file-read-cache-blocks=<size>     Capacity of the per-file chunk cache (in number of chunks). [default: 40]
+  --file-read-cache-blocks=<size>     Capacity of the per-file chunk cache (in number of chunks). [default: 10]
   --read-block-multiplier=<mult>      Number of 4k blocks to read per HTTP request. [default: 2048]
 ";
 
