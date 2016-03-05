@@ -4,6 +4,7 @@ extern crate google_drive3;
 extern crate libc;
 #[macro_use]
 extern crate log;
+extern crate threadpool;
 extern crate time;
 
 pub mod oauth;
@@ -168,6 +169,10 @@ impl GoogleFileTree {
     self.file_tree.get(file_id).map(|v| &v[..])
   }
 
+  fn has_children(&self, file_id: &str) -> bool {
+      self.file_tree.get(file_id).is_some()
+  }
+
   fn insert_node(&mut self, parent_id: Option<String>, new_node: GoogleFile) {
     self.inode_map.insert(new_node.inode(), new_node.file_id.clone());
     if parent_id.is_some() {
@@ -217,6 +222,7 @@ pub struct GDriveFS {
   file_tree: sync::Arc<sync::RwLock<GoogleFileTree>>,
   // map of gfileid -> file read handle
   read_handles: sync::Mutex<HashMap<String, http::FileReadHandle>>,
+  list_dir_pool: threadpool::ThreadPool,
   options: FileReadOptions,
 }
 
@@ -228,6 +234,7 @@ impl GDriveFS {
       authenticator: auth,
       file_tree: sync::Arc::new(sync::RwLock::new(GoogleFileTree::new())),
       read_handles: sync::Mutex::new(HashMap::new()),
+      list_dir_pool: threadpool::ThreadPool::new(4),
       options: options,
     }
   }
@@ -311,106 +318,75 @@ impl fuse::Filesystem for GDriveFS {
 
   fn readdir(&mut self, _req: &fuse::Request, ino: u64, _fh: u64, offset: u64, mut reply: fuse::ReplyDirectory) {
     debug!("readdir(ino:{}, offset:{})", ino, offset);
-    let mut dir_fileid: Option<String> = None;
-    {
-      let tree = self.file_tree.read().unwrap();
-      let child_ids = match tree.get_file_id(ino) {
-        Some(fileid) => {
-          dir_fileid = Some(fileid.clone());
-          let attr = tree.get_file(fileid);
-          if attr.is_none() {
-            reply.error(libc::ENOENT);
-            return;
-          } else if !attr.unwrap().is_dir() {
-            reply.error(libc::ENOTDIR);
-            return;
-          }
-          tree.get_child_ids(fileid)
-        }
-        None => {
-          // no file id found in inode map.
-          reply.error(libc::ENOENT);
-          return;
-        }
-      };
-      if let Some(children) = child_ids {
-        let mut foffset = offset + 1;
-        let split_at = if offset == 0 {
-          offset
-        } else {
-          foffset
-        };
-        if split_at >= children.len() as u64 {
-          // all done.
-          reply.ok();
-          return;
-        }
-        if offset == 0 {
-          reply.add(ino, 0, fuse::FileType::Directory, ".");
-        }
-        let (_, children) = children.split_at(split_at as usize);
-        for child in children {
-          let attr = tree.get_file(child).expect("Missing attr for file id");
-          if reply.add(attr.inode(), foffset, attr.kind(), attr.name()) {
-            // reply buffer is full.
-            break;
-          }
-          foffset += 1;
-        }
-        reply.ok();
-        return;
-      }
-    }
-    // need to list the directory.
-    {
-      let tree = self.file_tree.clone();
-      let auth = self.authenticator.clone();
-      let fileid = dir_fileid.unwrap().clone();
-      let offset = offset;
-      thread::spawn(move || {
-        let mut hub = google_drive3::Drive::new(hyper::client::Client::new(), auth);
-        let result = list_gdrive_dir(&fileid, &mut hub);
-        if result.is_err() {
-          reply.error(libc::EIO);
-          return;
-        }
+    let file_tree = self.file_tree.clone();
+    let auth = self.authenticator.clone();
+    self.list_dir_pool.execute(move || {
+        let mut fileid = String::new();
+        let mut has_children = false;
         {
-          let mut tree_guard = tree.write().unwrap();
-          for file in result.unwrap() {
-            tree_guard.insert_node(Some(fileid.clone()), file);
-          }
+            let tree = file_tree.read().unwrap();
+            match tree.get_file_id(ino) {
+                Some(id) => { fileid.push_str(id) },
+                None => {
+                    reply.error(libc::ENOENT);
+                    return;
+                }
+            };
+            match tree.get_file(&fileid) {
+                Some(attr) => {
+                    if !attr.is_dir() {
+                        reply.error(libc::ENOTDIR);
+                        return;
+                    }
+                },
+                None => {
+                    reply.error(libc::ENOENT);
+                    return;
+                }
+            };
+            has_children = tree.has_children(&fileid);
         }
-        // todo(jonallie): this is a complete cut-paste of the code above,
-        // and needs to be factored into a function.
-        {
-          let tree_guard = tree.read().unwrap();
-          if let Some(children) = tree_guard.get_child_ids(&fileid) {
+        // need to list the directory
+        if !has_children {
+            let mut hub = google_drive3::Drive::new(hyper::client::Client::new(), auth);
+            let result = list_gdrive_dir(&fileid, &mut hub);
+            if result.is_err() {
+                reply.error(libc::EIO);
+                return;
+            }
+            let mut tree = file_tree.write().unwrap();
+            for file in result.unwrap() {
+                tree.insert_node(Some(fileid.clone()), file);
+            }
+        }
+        let tree = file_tree.read().unwrap();
+        if let Some(children) = tree.get_child_ids(&fileid) {
             let mut foffset = offset + 1;
             let split_at = if offset == 0 {
-              offset
+                offset
             } else {
-              foffset
+                foffset
             };
             if split_at >= children.len() as u64 {
-              reply.ok();
-              return;
+                // all done.
+                reply.ok();
+                return;
             }
             if offset == 0 {
-              reply.add(ino, 0, fuse::FileType::Directory, ".");
+                reply.add(ino, 0, fuse::FileType::Directory, ".");
             }
             let (_, children) = children.split_at(split_at as usize);
             for child in children {
-              let attr = tree_guard.get_file(child).expect("missing attr for file id");
-              if reply.add(attr.inode(), foffset, attr.kind(), attr.name()) {
-                break;
-              }
-              foffset += 1;
+                let attr = tree.get_file(child).expect("Missing attr for file id");
+                if reply.add(attr.inode(), foffset, attr.kind(), attr.name()) {
+                    // reply buffer is full.
+                    break;
+                }
+                foffset += 1;
             }
-          }
-          reply.ok();
         }
-      });
-    }
+        reply.ok();
+    });
   }
 
   fn open(&mut self, _req: &fuse::Request, ino: u64, _flags: u32, reply: fuse::ReplyOpen) {
