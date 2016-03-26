@@ -1,17 +1,121 @@
 extern crate hyper;
 extern crate fuse;
-extern crate lru_time_cache;
 extern crate libc;
 
 use constants;
 use oauth;
 use oauth::GetToken;
+use std::cell::Cell;
+use std::cmp;
+use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::convert::From;
 use std::io::Read;
 use std::thread;
 use std::error::Error;
 use std::sync;
+
+struct BufferCacheEntry {
+    buf: Vec<u8>,
+    heat: Cell<u64>,
+}
+
+// maximum 'heat' value of a cache entry, bounds the work
+// we have to do to find an reusable buffer.
+const MAX_HEAT: u64 = 10;
+
+impl BufferCacheEntry {
+    fn new(data: Vec<u8>) -> BufferCacheEntry {
+        BufferCacheEntry{buf: data, heat: Cell::new(1)}
+    }
+
+    fn inc(&self) -> u64 {
+        self.heat.set(cmp::min(self.heat.get() + 1, MAX_HEAT));
+        self.heat.get()
+    }
+
+    fn dec(&self) -> u64 {
+        self.heat.set(cmp::max(self.heat.get() - 1, 0));
+        self.heat.get()
+    }
+}
+
+// BufferCache is a cache for file buffers. It uses an algorithm similar
+// to GCLOCK, with a bounded 'hotness'. In theory this should avoid large
+// amounts of alloc churn caused by repeatedly allocating new buffers for
+// reading file data.
+struct BufferCache {
+    cache: BTreeMap<u64, BufferCacheEntry>,
+    freelist: VecDeque<Vec<u8>>,
+    clock: VecDeque<u64>,
+}
+
+impl BufferCache {
+    fn new(count: usize, bufsize: usize) -> BufferCache {
+        let mut freelist : VecDeque<Vec<u8>> = VecDeque::with_capacity(count);
+        for _ in 0..count {
+            freelist.push_back(Vec::with_capacity(bufsize));
+        }
+        BufferCache{
+            cache: BTreeMap::new(),
+            freelist: freelist,
+            clock: VecDeque::new()}
+    }
+
+    fn contains_key(&self, offset: &u64) -> bool {
+        self.cache.contains_key(offset)
+    }
+
+    fn get(&self, offset: &u64) -> Option<&Vec<u8>> {
+        self.cache.get(offset).and_then(|entry| {
+            let heat = entry.inc();
+            debug!("buffercache: inc reference for offset: {}, new heat {}", offset, heat);
+            Some(&entry.buf)
+        })
+    }
+
+    fn take(&mut self) -> Vec<u8> {
+        if let Some(mut data) = self.freelist.pop_front() {
+            data.truncate(0);
+            return data;
+        }
+        if self.clock.is_empty() {
+            panic!("no data in freelist, and entries in clock");
+        }
+        // loop over clock, decrementing offset until we find an eligible
+        // buffer.
+        loop {
+            let offset = self.clock.pop_front().unwrap();
+            if !self.cache.contains_key(&offset) {
+                continue;
+            }
+            let heat = self.cache.get(&offset).unwrap().dec();
+            if heat == 0 {
+                debug!("buffercache: reusing buffer for offset {}", offset);
+                let mut buf = self.cache.remove(&offset).unwrap().buf;
+                buf.truncate(0);
+                return buf;
+            }
+            // still no zero heat buffer, offset goes back in the queue
+            // and we keep looping.
+            self.clock.push_back(offset);
+        }
+    }
+
+    fn insert(&mut self, offset: u64, data: Vec<u8>) {
+        // if we have a previous entry for this value, just add the
+        // old buf to the freelist.
+        if let Some(old_data) = self.cache.remove(&offset) {
+            self.freelist.push_back(old_data.buf)
+        }
+        self.cache.insert(offset, BufferCacheEntry::new(data));
+        self.clock.push_back(offset);
+    }
+    
+    fn put(&mut self, data: Vec<u8>) {
+        self.freelist.push_back(data);
+    }
+}
 
 // RangeReader reads byte ranges from an http url
 struct RangeReader {
@@ -33,7 +137,7 @@ impl RangeReader {
   // this uses the same semantics as http Range, notably:
   // - the range is inclusive, so 0-499 reads 500 bytes.
   // - |end| may be past EOF, in which case available data is returned.
-  fn read_range(&mut self, start: u64, end: u64) -> Result<Vec<u8>, Box<Error>> {
+  fn read_range(&mut self, start: u64, end: u64, buf: &mut Vec<u8>) -> Result<(), Box<Error>> {
     let token = self.authenticator.api_key().unwrap();
     let request = self.client
                       .get(&self.file_url)
@@ -44,15 +148,14 @@ impl RangeReader {
       return Err(Box::new(hyper::error::Error::Status));
     }
     debug!("got response, getting ready to read range data");
-    let mut data: Vec<u8> = Vec::with_capacity(((end - start) + 1) as usize);
-    try!(resp.read_to_end(&mut data));
+    try!(resp.read_to_end(buf));
     debug!("read range data, returning");
-    Ok(data)
+    Ok(())
   }
 
   // As above, but using a start + size rather than a range.
-  fn read_bytes(&mut self, start: u64, size: u64) -> Result<Vec<u8>, Box<Error>> {
-    self.read_range(start, start + size - 1)
+  fn read_bytes(&mut self, start: u64, size: u64, buf: &mut Vec<u8>) -> Result<(), Box<Error>> {
+    self.read_range(start, start + size - 1, buf)
   }
 }
 
@@ -126,10 +229,6 @@ impl FileReadHandle {
         let read_block_multiplier = options.read_block_multiplier;
         let (tx, rx) = sync::mpsc::channel::<FileReadRequest>();
         thread::Builder::new().name(url.clone()).spawn(move || {
-            // cache of offset -> data block at that offset.
-            let mut block_cache: lru_time_cache::LruCache<u64, Vec<u8>> =
-                lru_time_cache::LruCache::with_capacity(cache_size);
-
             // queue of offsets to read next.
             let mut readahead: VecDeque<u64> = VecDeque::with_capacity(readahead_queue_size);
 
@@ -137,6 +236,9 @@ impl FileReadHandle {
             let mut reader = RangeReader::new(&url, auth);
 
             let chunk_size : u64 = constants::BLOCK_SIZE as u64 * read_block_multiplier as u64;
+
+            // buffer cache
+            let mut buf_cache = BufferCache::new(cache_size as usize, chunk_size as usize);
 
             // loop until read channel is closed.
             loop {
@@ -157,10 +259,17 @@ impl FileReadHandle {
                         let mut new_req : Option<FileReadRequest> = None;
                         while let Some(offset) = readahead.pop_front() {
                             // ignore offsets already in the cache.
-                            if block_cache.contains_key(&offset) { continue; }
-                            match reader.read_bytes(offset, chunk_size) {
-                                Ok(data) => { block_cache.insert(offset, data); }
-                                Err(err) => { warn!("read error on readahed: {:?}", err); }
+                            if buf_cache.contains_key(&offset) { continue; }
+                            //if block_cache.contains_key(&offset) { continue; }
+                            let mut buf = buf_cache.take();
+                            match reader.read_bytes(offset, chunk_size, &mut buf) {
+                                Ok(()) => { buf_cache.insert(offset, buf); }
+                                Err(err) => {
+                                    // we failed to read, but need to give the buffer
+                                    // back to the cache to be reused.
+                                    buf_cache.put(buf);
+                                    warn!("read error on readahed: {:?}", err);
+                                }
                             }
                             // if we get a new read request, stop doing readahead
                             match rx.try_recv() {
@@ -206,18 +315,20 @@ impl FileReadHandle {
                     continue;
                 }
 
-                if !block_cache.contains_key(&chunk_offset) {
+                if !buf_cache.contains_key(&chunk_offset) {
                     // cache miss. Either the readahead isn't keeping up,
                     // or we're seeking within the file. Either way, we
                     // should clear the readahead queue.
                     debug!("file: {}, cache miss, clearing readahead", url);
                     readahead.clear();
-                    match reader.read_bytes(chunk_offset, chunk_size) {
-                        Ok(data) => {
-                            block_cache.insert(chunk_offset, data);
+                    let mut buf = buf_cache.take();
+                    match reader.read_bytes(chunk_offset, chunk_size, &mut buf) {
+                        Ok(()) => {
+                            buf_cache.insert(chunk_offset, buf);
                         }
                         Err(err) => {
                             error!("Read error for url: {} : {:?}", url, err);
+                            buf_cache.put(buf);
                             req.reply.error(libc::EIO);
                             continue;
                         }
@@ -226,7 +337,7 @@ impl FileReadHandle {
 
                 {
                     // scope for block cache borrow.
-                    let chunk_data: &Vec<u8> = block_cache.get(&chunk_offset).unwrap();
+                    let chunk_data: &Vec<u8> = buf_cache.get(&chunk_offset).unwrap();
                     let start: usize = (req.offset - chunk_offset) as usize;
                     let end: usize = start + req.size as usize;
                     let slice = &chunk_data[start..end];
@@ -236,7 +347,7 @@ impl FileReadHandle {
                 // schedule readahead.
                 let mut readahead_offset = chunk_offset + chunk_size;
                 for _ in 0..readahead_queue_size {
-                    if !block_cache.contains_key(&readahead_offset) {
+                    if !buf_cache.contains_key(&readahead_offset) {
                         readahead.push_back(readahead_offset);
                     }
                     readahead_offset += chunk_size;
