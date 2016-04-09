@@ -145,6 +145,9 @@ impl RangeReader {
                       .header(hyper::header::Authorization(hyper::header::Bearer { token: token }));
     let mut resp = try!(request.send());
     if !resp.status.is_success() {
+      let mut err: String = String::new();
+      try!(resp.read_to_string(&mut err));
+      warn!("Read error result: {}", err);
       return Err(Box::new(hyper::error::Error::Status));
     }
     debug!("got response, getting ready to read range data");
