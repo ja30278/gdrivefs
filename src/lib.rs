@@ -29,11 +29,15 @@ use std::thread;
 
 const TTL: time::Timespec = time::Timespec { sec: 5, nsec: 0 };
 
-// todo(jonallie): use the actual date as returned from drive.
-const CREATE_TIME: time::Timespec = time::Timespec {
+// Default time used for the root, and for files for which no time is returned
+// or time parsing fails.
+const DEFAULT_TIME: time::Timespec = time::Timespec {
   sec: 1381237736,
   nsec: 0,
 };
+
+// Format string for RFC 3339 Datetimes.
+const RFC3339_FMT: &'static str = "%Y-%m-%dT%H:%M:%S";
 
 // gdrive id of the root node.
 const ROOT_ID: &'static str = "root";
@@ -45,10 +49,10 @@ const ROOT_ATTR: fuse::FileAttr = fuse::FileAttr {
   ino: 1,
   size: 0,
   blocks: 0,
-  atime: CREATE_TIME,
-  mtime: CREATE_TIME,
-  ctime: CREATE_TIME,
-  crtime: CREATE_TIME,
+  atime: DEFAULT_TIME,
+  mtime: DEFAULT_TIME,
+  ctime: DEFAULT_TIME,
+  crtime: DEFAULT_TIME,
   kind: fuse::FileType::Directory,
   perm: 0o755,
   nlink: 2,
@@ -60,6 +64,13 @@ const ROOT_ATTR: fuse::FileAttr = fuse::FileAttr {
 
 // mime type of a directory in google drive.
 const FOLDER_MIME_TYPE: &'static str = "application/vnd.google-apps.folder";
+
+fn parse_rfc3339(s: &str) -> time::Timespec {
+    match time::strptime(s, RFC3339_FMT) {
+        Ok(tm) => { tm.to_timespec() }
+        Err(_) => { DEFAULT_TIME }
+    }
+}
 
 // A GoogleFile merges fuse file attributes with google drive metadata.
 #[derive(Debug, Clone)]
@@ -107,15 +118,18 @@ impl std::convert::From<google_drive3::File> for GoogleFile {
       Some(_) | None => { fuse::FileType::RegularFile },
     }; 
     let perms = if kind == fuse::FileType::Directory { 0o755 } else { 0o644 };
+    let created_time = parse_rfc3339(api_file.created_time.as_ref().unwrap_or(&"".into()));
+    let modified_time = parse_rfc3339(api_file.modified_time.as_ref().unwrap_or(&"".into()));
+
     let attr = fuse::FileAttr {
       ino: hasher.finish(),
       size: file_size,
       blocks: file_size / constants::BLOCK_SIZE as u64,
       // todo(jonallie): handle dates here.
-      atime: CREATE_TIME,
-      mtime: CREATE_TIME,
-      ctime: CREATE_TIME,
-      crtime: CREATE_TIME,
+      atime: modified_time,
+      mtime: modified_time,
+      ctime: modified_time,
+      crtime: created_time,
       kind: kind,
       perm: perms,
       nlink: 2,
@@ -195,7 +209,7 @@ fn list_gdrive_dir(gfile_id: &str, hub: &mut DriveHub) -> Result<Vec<GoogleFile>
     let mut list_op = hub.files()
                          .list()
                          .param("fields",
-                                "nextPageToken,files(id,mimeType,name,size)")
+                                "nextPageToken,files(id,mimeType,name,size,createdTime,modifiedTime)")
                          .q(&format!("'{}' in parents and trashed = false", gfile_id))
                          .order_by("name")
                          .page_size(500);
