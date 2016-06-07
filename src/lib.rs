@@ -1,6 +1,6 @@
 extern crate fuse;
 extern crate hyper;
-extern crate google_drive3;
+extern crate google_drive2;
 extern crate libc;
 #[macro_use]
 extern crate log;
@@ -77,6 +77,7 @@ fn parse_rfc3339(s: &str) -> time::Timespec {
 struct GoogleFile {
   file_id: String,
   file_name: String,
+  file_download_url: String,
   file_attr: fuse::FileAttr,
 }
 
@@ -101,25 +102,26 @@ impl GoogleFile {
     if self.is_dir() {
         None 
     } else { 
-        Some(format!("{}/{}?alt=media", FILE_GET_URL, self.file_id))
+        Some(self.file_download_url.clone())
+        //Some(format!("{}/{}?alt=media", FILE_GET_URL, self.file_id))
     }
   }
 }
 
-impl std::convert::From<google_drive3::File> for GoogleFile {
+impl std::convert::From<google_drive2::File> for GoogleFile {
 
-  fn from(api_file: google_drive3::File) -> GoogleFile {
+  fn from(api_file: google_drive2::File) -> GoogleFile {
     let file_id = api_file.id.expect("file id is missing");
     let mut hasher = std::hash::SipHasher::new();
-    let file_size = u64::from_str(api_file.size.as_ref().unwrap_or(&"0".into())).unwrap();
+    let file_size = u64::from_str(api_file.file_size.as_ref().unwrap_or(&"0".into())).unwrap();
     file_id.hash(&mut hasher);
     let kind = match api_file.mime_type.as_ref() {
       Some(mime_type) if mime_type == FOLDER_MIME_TYPE => { fuse::FileType::Directory },
       Some(_) | None => { fuse::FileType::RegularFile },
     }; 
     let perms = if kind == fuse::FileType::Directory { 0o755 } else { 0o644 };
-    let created_time = parse_rfc3339(api_file.created_time.as_ref().unwrap_or(&"".into()));
-    let modified_time = parse_rfc3339(api_file.modified_time.as_ref().unwrap_or(&"".into()));
+    let created_time = parse_rfc3339(api_file.created_date.as_ref().unwrap_or(&"".into()));
+    let modified_time = parse_rfc3339(api_file.modified_date.as_ref().unwrap_or(&"".into()));
 
     let attr = fuse::FileAttr {
       ino: hasher.finish(),
@@ -140,8 +142,10 @@ impl std::convert::From<google_drive3::File> for GoogleFile {
     };
     GoogleFile {
       file_id: file_id,
-      file_name: api_file.name.unwrap_or("__UNKNOWN_FILE_NAME__".into()),
+      file_name: api_file.title.unwrap_or("__UNKNOWN_FILE_NAME__".into()),
+      file_download_url: api_file.download_url.unwrap_or("".into()),
       file_attr: attr,
+
     }
   }
 }
@@ -165,6 +169,7 @@ impl GoogleFileTree {
     let root_gfile = GoogleFile {
       file_id: ROOT_ID.into(),
       file_name: ROOT_ID.into(),
+      file_download_url: "".into(),
       file_attr: ROOT_ATTR,
     };
     tree.insert_node(None, root_gfile);
@@ -200,7 +205,7 @@ impl GoogleFileTree {
   }
 }
 
-type DriveHub = google_drive3::Drive<hyper::client::Client, oauth::GoogleAuthenticator>;
+type DriveHub = google_drive2::Drive<hyper::client::Client, oauth::GoogleAuthenticator>;
 
 fn list_gdrive_dir(gfile_id: &str, hub: &mut DriveHub) -> Result<Vec<GoogleFile>, Box<Error>> {
   let mut file_vec: Vec<GoogleFile> = Vec::new();
@@ -209,17 +214,17 @@ fn list_gdrive_dir(gfile_id: &str, hub: &mut DriveHub) -> Result<Vec<GoogleFile>
     let mut list_op = hub.files()
                          .list()
                          .param("fields",
-                                "nextPageToken,files(id,mimeType,name,size,createdTime,modifiedTime)")
+                                "nextPageToken,items(id,mimeType,title,fileSize,downloadUrl,createdDate,modifiedDate)")
                          .q(&format!("'{}' in parents and trashed = false", gfile_id))
-                         .order_by("name")
-                         .page_size(500);
+                         .order_by("title")
+                         .max_results(500);
     if page_token.is_some() {
       list_op = list_op.page_token(page_token.as_ref().unwrap());
     }
     let (_, file_list) = try!(list_op.doit());
     page_token = file_list.next_page_token;
-    if file_list.files.is_some() {
-      for file in file_list.files.unwrap() {
+    if file_list.items.is_some() {
+      for file in file_list.items.unwrap() {
         file_vec.push(GoogleFile::from(file));
       }
     }
@@ -261,7 +266,7 @@ impl GDriveFS {
     thread::Builder::new().name(String::from("dir_refresh")).spawn(move || {
       let mut queue: VecDeque<String> = VecDeque::new();
       queue.push_back(ROOT_ID.into());
-      let mut hub = google_drive3::Drive::new(hyper::client::Client::new(), auth);
+      let mut hub = google_drive2::Drive::new(hyper::client::Client::new(), auth);
       loop {
         if queue.is_empty() {
           queue.push_back(ROOT_ID.into());
@@ -362,7 +367,7 @@ impl fuse::Filesystem for GDriveFS {
         }
         // need to list the directory
         if !has_children {
-            let mut hub = google_drive3::Drive::new(hyper::client::Client::new(), auth);
+            let mut hub = google_drive2::Drive::new(hyper::client::Client::new(), auth);
             let result = list_gdrive_dir(&fileid, &mut hub);
             if result.is_err() {
                 reply.error(libc::EIO);
