@@ -1,4 +1,5 @@
 extern crate hyper;
+extern crate libc;
 extern crate log;
 extern crate inth_oauth2;
 extern crate rustc_serialize;
@@ -13,8 +14,8 @@ use common;
 
 pub use self::yup_oauth2::GetToken;
 
-pub type GoogleToken = inth_oauth2::token::Bearer<inth_oauth2::token::Expiring>;
-pub type GoogleClient = inth_oauth2::client::Client<inth_oauth2::provider::Google>;
+pub type GoogleToken = inth_oauth2::token::Bearer<inth_oauth2::token::Refresh>;
+pub type GoogleClient = inth_oauth2::client::Client<inth_oauth2::provider::google::Installed>;
 
 pub fn new_google_client(client_id : &str, client_secret: &str, auth_url: Option<String>) -> GoogleClient {
   GoogleClient::new(String::from(client_id), String::from(client_secret), auth_url)
@@ -33,7 +34,7 @@ pub fn load_token(path : &str) -> std::io::Result<GoogleToken> {
 pub fn save_token(path: &str, tok : &GoogleToken) -> std::io::Result<()> {
   rustc_serialize::json::encode(tok)
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-    .and_then(|encoded| common::set_contents(path, encoded.as_bytes(), 0o600 as std::os::unix::raw::mode_t))
+    .and_then(|encoded| common::set_contents(path, encoded.as_bytes(), 0o600 as libc::mode_t))
 }
 
 
@@ -41,12 +42,12 @@ pub fn save_token(path: &str, tok : &GoogleToken) -> std::io::Result<()> {
 /// with the Google drive api.
 struct GoogleAuthenticatorImpl {
   http_client: hyper::client::Client,
-  oauth_client: inth_oauth2::client::Client<inth_oauth2::provider::Google>,
+  oauth_client: inth_oauth2::client::Client<inth_oauth2::provider::google::Installed>,
   inth_token: GoogleToken,
 }
 
 impl GoogleAuthenticatorImpl {
-  pub fn new(oauth_client: inth_oauth2::client::Client<inth_oauth2::provider::Google>,
+  pub fn new(oauth_client: inth_oauth2::client::Client<inth_oauth2::provider::google::Installed>,
              initial_token: GoogleToken)
              -> GoogleAuthenticatorImpl {
     GoogleAuthenticatorImpl {

@@ -1,121 +1,17 @@
 extern crate hyper;
 extern crate fuse;
 extern crate libc;
+extern crate poolcache;
 
 use constants;
 use oauth;
 use oauth::GetToken;
-use std::cell::Cell;
-use std::cmp;
-use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::convert::From;
 use std::io::Read;
 use std::thread;
 use std::error::Error;
 use std::sync;
-
-struct BufferCacheEntry {
-    buf: Vec<u8>,
-    heat: Cell<u64>,
-}
-
-// maximum 'heat' value of a cache entry, bounds the work
-// we have to do to find an reusable buffer.
-const MAX_HEAT: u64 = 10;
-
-impl BufferCacheEntry {
-    fn new(data: Vec<u8>) -> BufferCacheEntry {
-        BufferCacheEntry{buf: data, heat: Cell::new(1)}
-    }
-
-    fn inc(&self) -> u64 {
-        self.heat.set(cmp::min(self.heat.get() + 1, MAX_HEAT));
-        self.heat.get()
-    }
-
-    fn dec(&self) -> u64 {
-        self.heat.set(cmp::max(self.heat.get() - 1, 0));
-        self.heat.get()
-    }
-}
-
-// BufferCache is a cache for file buffers. It uses an algorithm similar
-// to GCLOCK, with a bounded 'hotness'. In theory this should avoid large
-// amounts of alloc churn caused by repeatedly allocating new buffers for
-// reading file data.
-struct BufferCache {
-    cache: BTreeMap<u64, BufferCacheEntry>,
-    freelist: VecDeque<Vec<u8>>,
-    clock: VecDeque<u64>,
-}
-
-impl BufferCache {
-    fn new(count: usize, bufsize: usize) -> BufferCache {
-        let mut freelist : VecDeque<Vec<u8>> = VecDeque::with_capacity(count);
-        for _ in 0..count {
-            freelist.push_back(Vec::with_capacity(bufsize));
-        }
-        BufferCache{
-            cache: BTreeMap::new(),
-            freelist: freelist,
-            clock: VecDeque::new()}
-    }
-
-    fn contains_key(&self, offset: &u64) -> bool {
-        self.cache.contains_key(offset)
-    }
-
-    fn get(&self, offset: &u64) -> Option<&Vec<u8>> {
-        self.cache.get(offset).and_then(|entry| {
-            let heat = entry.inc();
-            debug!("buffercache: inc reference for offset: {}, new heat {}", offset, heat);
-            Some(&entry.buf)
-        })
-    }
-
-    fn take(&mut self) -> Vec<u8> {
-        if let Some(mut data) = self.freelist.pop_front() {
-            data.truncate(0);
-            return data;
-        }
-        if self.clock.is_empty() {
-            panic!("no data in freelist, and entries in clock");
-        }
-        // loop over clock, decrementing offset until we find an eligible
-        // buffer.
-        loop {
-            let offset = self.clock.pop_front().unwrap();
-            if !self.cache.contains_key(&offset) {
-                continue;
-            }
-            let heat = self.cache.get(&offset).unwrap().dec();
-            if heat == 0 {
-                debug!("buffercache: reusing buffer for offset {}", offset);
-                let mut buf = self.cache.remove(&offset).unwrap().buf;
-                buf.truncate(0);
-                return buf;
-            }
-            // still no zero heat buffer, offset goes back in the queue
-            // and we keep looping.
-            self.clock.push_back(offset);
-        }
-    }
-
-    fn insert(&mut self, offset: u64, data: Vec<u8>) {
-        // if we have a previous entry for this value, just add the
-        // old buf to the freelist.
-        if let Some(old_data) = self.cache.remove(&offset) {
-            self.freelist.push_back(old_data.buf)
-        }
-        self.cache.insert(offset, BufferCacheEntry::new(data));
-        self.clock.push_back(offset);
-    }
-    
-    fn put(&mut self, data: Vec<u8>) {
-        self.freelist.push_back(data);
-    }
-}
 
 // RangeReader reads byte ranges from an http url
 struct RangeReader {
@@ -241,7 +137,12 @@ impl FileReadHandle {
             let chunk_size : u64 = constants::BLOCK_SIZE as u64 * read_block_multiplier as u64;
 
             // buffer cache
-            let mut buf_cache = BufferCache::new(cache_size as usize, chunk_size as usize);
+            //
+            //let mut buf_cache = BufferCache::new(cache_size as usize, chunk_size as usize);
+            let mut buf_cache = poolcache::PoolCache::new(10);
+            for _ in 0..cache_size {
+                buf_cache.put(Vec::with_capacity(chunk_size as usize));
+            }
 
             // loop until read channel is closed.
             loop {
@@ -264,7 +165,7 @@ impl FileReadHandle {
                             // ignore offsets already in the cache.
                             if buf_cache.contains_key(&offset) { continue; }
                             //if block_cache.contains_key(&offset) { continue; }
-                            let mut buf = buf_cache.take();
+                            let mut buf = buf_cache.take().unwrap();
                             match reader.read_bytes(offset, chunk_size, &mut buf) {
                                 Ok(()) => { buf_cache.insert(offset, buf); }
                                 Err(err) => {
@@ -324,7 +225,7 @@ impl FileReadHandle {
                     // should clear the readahead queue.
                     debug!("file: {}, cache miss, clearing readahead", url);
                     readahead.clear();
-                    let mut buf = buf_cache.take();
+                    let mut buf = buf_cache.take().unwrap();
                     match reader.read_bytes(chunk_offset, chunk_size, &mut buf) {
                         Ok(()) => {
                             buf_cache.insert(chunk_offset, buf);

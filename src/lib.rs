@@ -21,8 +21,8 @@ use std::collections::vec_deque::VecDeque;
 use std::convert::From;
 use std::convert::Into;
 use std::error::Error;
+use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
-use std::io::Read;
 use std::str::FromStr;
 use std::sync;
 use std::thread;
@@ -303,7 +303,7 @@ impl fuse::Filesystem for GDriveFS {
       reply.statfs(0, 0, 0, 0, 0, constants::BLOCK_SIZE, 256, 0); 
   }
 
-  fn lookup(&mut self, _req: &fuse::Request, parent: u64, name: &std::path::Path,
+  fn lookup(&mut self, _req: &fuse::Request, parent: u64, name: &OsStr,
             reply: fuse::ReplyEntry) {
     let tree = self.file_tree.read().unwrap();
     match tree.get_file_id(parent).and_then(|file_id| tree.get_child_ids(file_id)) {
@@ -446,17 +446,14 @@ impl fuse::Filesystem for GDriveFS {
   fn release(&mut self, _req: &fuse::Request, ino: u64, _fh: u64, _flags: u32,
              _lock_owner: u64, _flush: bool, reply: fuse::ReplyEmpty) {
     info!("release: inode({})", ino);
-    let mut fileid: Option<String> = None;
-    {
-      let tree = self.file_tree.read().unwrap();
-      fileid = tree.get_file_id(ino).cloned();
-      if fileid.is_none() {
-        warn!("Release called for unknown inode: {}", ino);
-        reply.ok();
-        return;
-      }
-    }
-    let fileid = fileid.unwrap();
+    let fileid = match self.file_tree.read().unwrap().get_file_id(ino) {
+        Some(id) => id.clone(),
+        None => {
+            warn!("Release called for unknown inode: {}", ino);
+            reply.ok();
+            return;
+        }
+    };
     let mut handles = self.read_handles.lock().unwrap();
     if let Some(handle) = handles.remove(&fileid) {
       if let Some(handle) = handle.decref() {
@@ -470,17 +467,15 @@ impl fuse::Filesystem for GDriveFS {
 
   fn read(&mut self, _req: &fuse::Request, ino: u64, _fh: u64, offset: u64,
           size: u32, reply: fuse::ReplyData) {
-    let mut fileid: Option<String> = None;
-    {
-      let tree = self.file_tree.read().unwrap();
-      fileid = tree.get_file_id(ino).cloned();
-      if fileid.is_none() {
-        reply.error(libc::ENOENT);
-        return;
-      }
-    }
+    let fileid = match self.file_tree.read().unwrap().get_file_id(ino) {
+        Some(id) => id.clone(),
+        None => {
+            reply.error(libc::ENOENT);
+            return;
+        }
+    };
     let handle_map = self.read_handles.lock().unwrap();
-    match handle_map.get(fileid.as_ref().unwrap()) {
+    match handle_map.get(&fileid) {
       Some(handle) => {
         handle.do_read(offset, size, reply);
       }

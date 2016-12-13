@@ -1,3 +1,5 @@
+extern crate libc;
+
 use std;
 use std::os::unix::fs::OpenOptionsExt;
 use std::io::Read;
@@ -13,8 +15,8 @@ pub fn get_contents(path: &str) -> std::io::Result<String> {
 }
 
 /// set_contents is a convenience function for writing a string to a file.
-pub fn set_contents(path: &str, contents: &[u8], mode: std::os::unix::raw::mode_t) -> std::io::Result<()> {
-  let mut f = try!(std::fs::OpenOptions::new().write(true).create(true).mode(mode).open(path));
+pub fn set_contents(path: &str, contents: &[u8], mode: libc::mode_t) -> std::io::Result<()> {
+  let mut f = try!(std::fs::OpenOptions::new().write(true).create(true).mode(mode as u32).open(path));
   //let mut f = try!(std::fs::File::create(std::path::Path::new(path)));
   try!(f.write_all(contents));
   Ok(())
