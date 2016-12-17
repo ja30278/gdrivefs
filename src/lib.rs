@@ -445,7 +445,7 @@ impl fuse::Filesystem for GDriveFS {
 
   fn release(&mut self, _req: &fuse::Request, ino: u64, _fh: u64, _flags: u32,
              _lock_owner: u64, _flush: bool, reply: fuse::ReplyEmpty) {
-    info!("release: inode({})", ino);
+    debug!("release: inode({})", ino);
     let fileid = match self.file_tree.read().unwrap().get_file_id(ino) {
         Some(id) => id.clone(),
         None => {
@@ -474,6 +474,7 @@ impl fuse::Filesystem for GDriveFS {
             return;
         }
     };
+    debug!("Read: found file id {} for inode {}", &fileid, ino);
     let handle_map = self.read_handles.lock().unwrap();
     match handle_map.get(&fileid) {
       Some(handle) => {

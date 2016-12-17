@@ -95,10 +95,10 @@ pub struct FileReadHandle {
 impl FileReadHandle {
     /// Asynchronously peform a read at |offset| of size |size|, returning
     /// the results of the read directly to |reply|
-    pub fn do_read(&self, offset: u64, size: u32, reply: fuse::ReplyData) {
+    pub fn do_read(&self, offset: u64, size: u32, reply: fuse::ReplyData) -> Result<(), String> {
         self.read_chan.send(
             FileReadRequest{offset: offset, size: size, reply: reply}
-        ).unwrap();
+        ).map_err(|err| err.description().into())
     }
 
     /// increase the reference count of the handle.
@@ -226,6 +226,7 @@ impl FileReadHandle {
                     debug!("file: {}, cache miss, clearing readahead", url);
                     readahead.clear();
                     let mut buf = buf_cache.take().unwrap();
+                    buf.clear();
                     match reader.read_bytes(chunk_offset, chunk_size, &mut buf) {
                         Ok(()) => {
                             buf_cache.insert(chunk_offset, buf);
