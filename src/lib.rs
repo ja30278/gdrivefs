@@ -42,11 +42,13 @@ const RFC3339_FMT: &'static str = "%Y-%m-%dT%H:%M:%S";
 // gdrive id of the root node.
 const ROOT_ID: &'static str = "root";
 
+const ROOT_INODE: u64 = 1;
+
 const FILE_GET_URL: &'static str = "https://www.googleapis.com/drive/v3/files";
 
 // attributes of the root node.
 const ROOT_ATTR: fuse::FileAttr = fuse::FileAttr {
-  ino: 1,
+  ino: ROOT_INODE,
   size: 0,
   blocks: 0,
   atime: DEFAULT_TIME,
@@ -151,20 +153,17 @@ impl std::convert::From<google_drive2::File> for GoogleFile {
 }
 
 struct GoogleFileTree {
-  // map of inode -> gfile id.
-  inode_map: BTreeMap<u64, String>,
-  // map of gfile id -> vec([gfile ids of children])
-  file_tree: HashMap<String, Vec<String>>,
-  // map of gfile id -> GoogleFile structure
-  file_attrs: HashMap<String, GoogleFile>,
+  // map of inode-> vec([inodes of children])
+  file_tree: BTreeMap<u64, Vec<u64>>,
+  // map of inode -> GoogleFile
+  file_attrs: BTreeMap<u64, GoogleFile>,
 }
 
 impl GoogleFileTree {
   fn new() -> GoogleFileTree {
     let mut tree = GoogleFileTree {
-      inode_map: BTreeMap::new(),
-      file_tree: HashMap::new(),
-      file_attrs: HashMap::new(),
+      file_tree: BTreeMap::new(),
+      file_attrs: BTreeMap::new(),
     };
     let root_gfile = GoogleFile {
       file_id: ROOT_ID.into(),
@@ -176,32 +175,27 @@ impl GoogleFileTree {
     tree
   }
 
-  fn get_file_id(&self, inode: u64) -> Option<&String> {
-    self.inode_map.get(&inode)
+  fn get_file(&self, inode: &u64) -> Option<&GoogleFile> {
+    self.file_attrs.get(inode)
   }
 
-  fn get_file(&self, file_id: &str) -> Option<&GoogleFile> {
-    self.file_attrs.get(file_id)
+  fn get_children(&self, inode: &u64) -> Option<&[u64]> {
+    self.file_tree.get(inode).map(|v| &v[..])
   }
 
-  fn get_child_ids(&self, file_id: &str) -> Option<&[String]> {
-    self.file_tree.get(file_id).map(|v| &v[..])
+  fn has_children(&self, inode: &u64) -> bool {
+      self.file_tree.get(inode).is_some()
   }
 
-  fn has_children(&self, file_id: &str) -> bool {
-      self.file_tree.get(file_id).is_some()
-  }
-
-  fn insert_node(&mut self, parent_id: Option<String>, new_node: GoogleFile) {
-    self.inode_map.insert(new_node.inode(), new_node.file_id.clone());
-    if parent_id.is_some() {
-      self.file_tree.entry(parent_id.unwrap()).or_insert(Vec::new()).push(new_node.file_id.clone());
+  fn insert_node(&mut self, parent_inode: Option<u64>, new_node: GoogleFile) {
+    if let Some(inode) = parent_inode {
+        self.file_tree.entry(inode).or_insert(Vec::new()).push(new_node.inode());
     }
-    self.file_attrs.insert(new_node.file_id.clone(), new_node);
+    self.file_attrs.insert(new_node.inode(), new_node);
   }
 
-  fn clear_children(&mut self, parent_id: &str) {
-    self.file_tree.remove(parent_id);
+  fn clear_children(&mut self, parent_inode: &u64) {
+    self.file_tree.remove(parent_inode);
   }
 }
 
@@ -239,8 +233,8 @@ fn list_gdrive_dir(gfile_id: &str, hub: &mut DriveHub) -> Result<Vec<GoogleFile>
 pub struct GDriveFS {
   authenticator: oauth::GoogleAuthenticator,
   file_tree: sync::Arc<sync::RwLock<GoogleFileTree>>,
-  // map of gfileid -> file read handle
-  read_handles: sync::Mutex<HashMap<String, http::FileReadHandle>>,
+  // map of inode -> file read handle
+  read_handles: sync::Mutex<BTreeMap<u64, http::FileReadHandle>>,
   list_dir_pool: threadpool::ThreadPool,
   options: FileReadOptions,
 }
@@ -252,7 +246,7 @@ impl GDriveFS {
     GDriveFS {
       authenticator: auth,
       file_tree: sync::Arc::new(sync::RwLock::new(GoogleFileTree::new())),
-      read_handles: sync::Mutex::new(HashMap::new()),
+      read_handles: sync::Mutex::new(BTreeMap::new()),
       list_dir_pool: threadpool::ThreadPool::new(4),
       options: options,
     }
@@ -264,25 +258,31 @@ impl GDriveFS {
     let auth = self.authenticator.clone();
     let tree = self.file_tree.clone();
     thread::Builder::new().name(String::from("dir_refresh")).spawn(move || {
-      let mut queue: VecDeque<String> = VecDeque::new();
-      queue.push_back(ROOT_ID.into());
+      let mut queue: VecDeque<u64> = VecDeque::new();
+      queue.push_back(ROOT_INODE);
       let mut hub = google_drive2::Drive::new(hyper::client::Client::new(), auth);
       loop {
         if queue.is_empty() {
-          queue.push_back(ROOT_ID.into());
+          queue.push_back(ROOT_INODE);
           thread::sleep(interval);
         }
-        if let Some(id) = queue.pop_front() {
+        if let Some(inode) = queue.pop_front() {
+          let id = match tree.read().unwrap().get_file(&inode) {
+              Some(attr) => {
+                  attr.file_id.clone()
+              },
+              None => continue
+          };
           debug!("refreshing dir id {}", id);
           match list_gdrive_dir(&id, &mut hub) {
             Ok(files) => {
               let mut tree_guard = tree.write().unwrap();
-              tree_guard.clear_children(&id);
+              tree_guard.clear_children(&inode);
               for file in files {
                 if file.is_dir() {
-                  queue.push_back(file.file_id.clone());
+                  queue.push_back(file.inode());
                 }
-                tree_guard.insert_node(Some(id.clone()), file);
+                tree_guard.insert_node(Some(inode), file);
               }
             }
             Err(err) => {
@@ -306,7 +306,7 @@ impl fuse::Filesystem for GDriveFS {
   fn lookup(&mut self, _req: &fuse::Request, parent: u64, name: &OsStr,
             reply: fuse::ReplyEntry) {
     let tree = self.file_tree.read().unwrap();
-    match tree.get_file_id(parent).and_then(|file_id| tree.get_child_ids(file_id)) {
+    match tree.get_children(&parent) {
       Some(children) => {
         for child in children {
           match tree.get_file(child) {
@@ -327,7 +327,7 @@ impl fuse::Filesystem for GDriveFS {
 
   fn getattr(&mut self, _req: &fuse::Request, ino: u64, reply: fuse::ReplyAttr) {
     let tree = self.file_tree.read().unwrap();
-    match tree.get_file_id(ino).and_then(|fileid| tree.get_file(fileid)) {
+    match self.file_tree.read().unwrap().get_file(&ino) {
       Some(attr) => {
         reply.attr(&TTL, &attr.file_attr);
       }
@@ -344,26 +344,20 @@ impl fuse::Filesystem for GDriveFS {
         let mut has_children = false;
         {
             let tree = file_tree.read().unwrap();
-            match tree.get_file_id(ino) {
-                Some(id) => { fileid.push_str(id) },
-                None => {
-                    reply.error(libc::ENOENT);
-                    return;
-                }
-            };
-            match tree.get_file(&fileid) {
+            match tree.get_file(&ino) {
                 Some(attr) => {
                     if !attr.is_dir() {
                         reply.error(libc::ENOTDIR);
                         return;
                     }
+                    fileid.push_str(&attr.file_id)
                 },
                 None => {
                     reply.error(libc::ENOENT);
                     return;
                 }
-            };
-            has_children = tree.has_children(&fileid);
+            }
+            has_children = tree.has_children(&ino);
         }
         // need to list the directory
         if !has_children {
@@ -375,11 +369,11 @@ impl fuse::Filesystem for GDriveFS {
             }
             let mut tree = file_tree.write().unwrap();
             for file in result.unwrap() {
-                tree.insert_node(Some(fileid.clone()), file);
+                tree.insert_node(Some(ino), file);
             }
         }
         let tree = file_tree.read().unwrap();
-        if let Some(children) = tree.get_child_ids(&fileid) {
+        if let Some(children) = tree.get_children(&ino) {
             let mut foffset = offset + 1;
             let split_at = if offset == 0 {
                 offset
@@ -410,31 +404,16 @@ impl fuse::Filesystem for GDriveFS {
 
   fn open(&mut self, _req: &fuse::Request, ino: u64, _flags: u32, reply: fuse::ReplyOpen) {
     debug!("open for inode {}", ino);
-    let mut download_url: Option<String> = None;
-    let mut gfileid: Option<String> = None;
-    {
-      let tree = self.file_tree.read().unwrap();
-      match tree.get_file_id(ino).and_then(|fileid| {
-        gfileid = Some(fileid.clone());
-        tree.get_file(fileid)
-        }) {
-          Some(attr) => {
-            download_url = attr.download_url();
-          }
-          None => {
-            reply.error(libc::ENOENT);
-            return;
-        }
-      }
-    }  // end tree scope
+    let download_url = self.file_tree.read().unwrap()
+        .get_file(&ino)
+        .and_then( |attr| attr.download_url() );
     if download_url.is_none() {
         reply.error(libc::ENOSYS);
         return;
     }
     let download_url = download_url.unwrap();
-    let gfileid = gfileid.unwrap();
     let mut reader_map = self.read_handles.lock().unwrap();
-    let handle = reader_map.entry(gfileid.clone())
+    let handle = reader_map.entry(ino)
         .or_insert_with(|| {
             http::FileReadHandle::spawn(&download_url, &self.authenticator, &self.options)
         }
@@ -446,18 +425,10 @@ impl fuse::Filesystem for GDriveFS {
   fn release(&mut self, _req: &fuse::Request, ino: u64, _fh: u64, _flags: u32,
              _lock_owner: u64, _flush: bool, reply: fuse::ReplyEmpty) {
     debug!("release: inode({})", ino);
-    let fileid = match self.file_tree.read().unwrap().get_file_id(ino) {
-        Some(id) => id.clone(),
-        None => {
-            warn!("Release called for unknown inode: {}", ino);
-            reply.ok();
-            return;
-        }
-    };
     let mut handles = self.read_handles.lock().unwrap();
-    if let Some(handle) = handles.remove(&fileid) {
+    if let Some(handle) = handles.remove(&ino) {
       if let Some(handle) = handle.decref() {
-          handles.insert(fileid, handle);
+          handles.insert(ino, handle);
       }
     } else {
       warn!("no open handle found for inode: {}", ino);
@@ -467,16 +438,8 @@ impl fuse::Filesystem for GDriveFS {
 
   fn read(&mut self, _req: &fuse::Request, ino: u64, _fh: u64, offset: u64,
           size: u32, reply: fuse::ReplyData) {
-    let fileid = match self.file_tree.read().unwrap().get_file_id(ino) {
-        Some(id) => id.clone(),
-        None => {
-            reply.error(libc::ENOENT);
-            return;
-        }
-    };
-    debug!("Read: found file id {} for inode {}", &fileid, ino);
     let handle_map = self.read_handles.lock().unwrap();
-    match handle_map.get(&fileid) {
+    match handle_map.get(&ino) {
       Some(handle) => {
         handle.do_read(offset, size, reply);
       }
