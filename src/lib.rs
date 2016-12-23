@@ -16,7 +16,7 @@ pub use http::FileReadOptions;
 pub use common::get_contents;
 pub use common::set_contents;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::collections::vec_deque::VecDeque;
 use std::convert::From;
 use std::convert::Into;
@@ -129,7 +129,6 @@ impl std::convert::From<google_drive2::File> for GoogleFile {
       ino: hasher.finish(),
       size: file_size,
       blocks: file_size / constants::BLOCK_SIZE as u64,
-      // todo(jonallie): handle dates here.
       atime: modified_time,
       mtime: modified_time,
       ctime: modified_time,
@@ -212,8 +211,8 @@ fn list_gdrive_dir(gfile_id: &str, hub: &mut DriveHub) -> Result<Vec<GoogleFile>
                          .q(&format!("'{}' in parents and trashed = false", gfile_id))
                          .order_by("title")
                          .max_results(500);
-    if page_token.is_some() {
-      list_op = list_op.page_token(page_token.as_ref().unwrap());
+    if let Some(ref token) = page_token {
+        list_op = list_op.page_token(token);
     }
     let (_, file_list) = try!(list_op.doit());
     page_token = file_list.next_page_token;
@@ -326,7 +325,6 @@ impl fuse::Filesystem for GDriveFS {
   }
 
   fn getattr(&mut self, _req: &fuse::Request, ino: u64, reply: fuse::ReplyAttr) {
-    let tree = self.file_tree.read().unwrap();
     match self.file_tree.read().unwrap().get_file(&ino) {
       Some(attr) => {
         reply.attr(&TTL, &attr.file_attr);

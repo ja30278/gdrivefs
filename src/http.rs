@@ -164,7 +164,6 @@ impl FileReadHandle {
                         while let Some(offset) = readahead.pop_front() {
                             // ignore offsets already in the cache.
                             if buf_cache.contains_key(&offset) { continue; }
-                            //if block_cache.contains_key(&offset) { continue; }
                             let mut buf = buf_cache.take().unwrap();
                             match reader.read_bytes(offset, chunk_size, &mut buf) {
                                 Ok(()) => { buf_cache.insert(offset, buf); }
