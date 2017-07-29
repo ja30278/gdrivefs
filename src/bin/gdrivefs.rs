@@ -51,6 +51,7 @@ struct Args {
   arg_mountpoint: String,
 }
 
+
 fn main() {
   env_logger::init().unwrap();
   let args: Args = docopt::Docopt::new(USAGE).and_then(|d| d.decode()).unwrap_or_else(|e| e.exit());
@@ -73,8 +74,6 @@ fn main() {
     driveimpl.start_auto_refresh(std::time::Duration::new(args.flag_dir_poll_secs as u64, 0));
   }
 
-  //let mount_options: Vec<std::ffi::OsString> = Vec::new();
   // todo(jonallie): figure out how to make this the default using docopt.
-  //mount_options.push(std::ffi::OsString::from("-oallow_other"));
   fuse::mount(driveimpl, &args.arg_mountpoint, &[std::ffi::OsStr::new("-oallow_other")]);
 }

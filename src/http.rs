@@ -81,8 +81,27 @@ pub struct FileReadOptions {
 struct FileReadRequest {
     offset: u64,
     size: u32,
-    reply: fuse::ReplyData,
+    reply: Option<fuse::ReplyData>,
 }
+
+impl FileReadRequest {
+    pub fn error(self, err: libc::c_int) {
+        if let Some(reply) = self.reply {
+            reply.error(err);
+        }
+    }
+
+    pub fn data(self, data: &[u8]) {
+        if let Some(reply) = self.reply {
+            reply.data(data);
+        }
+    }
+
+    pub fn is_readahead(&self) -> bool {
+        self.reply.is_none()
+    }
+}
+
 
 /// A handle to a a thread performing reads for a file.
 /// |incref()| should be called once for each active reader of the file,
@@ -97,7 +116,7 @@ impl FileReadHandle {
     /// the results of the read directly to |reply|
     pub fn do_read(&self, offset: u64, size: u32, reply: fuse::ReplyData) -> Result<(), String> {
         self.read_chan.send(
-            FileReadRequest{offset: offset, size: size, reply: reply}
+            FileReadRequest{offset: offset, size: size, reply: Some(reply)}
         ).map_err(|err| err.description().into())
     }
 
@@ -159,42 +178,11 @@ impl FileReadHandle {
 
                     // no request was ready, but we're still active.
                     Err(sync::mpsc::TryRecvError::Empty) => {
-                        // if we have readahead requests, service them until we get a request.
-                        let mut new_req : Option<FileReadRequest> = None;
-                        while let Some(offset) = readahead.pop_front() {
-                            // ignore offsets already in the cache.
-                            if buf_cache.contains_key(&offset) { continue; }
-                            let mut buf = buf_cache.take().unwrap();
-                            match reader.read_bytes(offset, chunk_size, &mut buf) {
-                                Ok(()) => { buf_cache.insert(offset, buf); }
-                                Err(err) => {
-                                    // we failed to read, but need to give the buffer
-                                    // back to the cache to be reused.
-                                    buf_cache.put(buf);
-                                    warn!("read error on readahed: {:?}", err);
-                                }
-                            }
-                            // if we get a new read request, stop doing readahead
-                            match rx.try_recv() {
-                                Ok(req) => {
-                                    new_req = Some(req);
-                                    break;
-                                }
-                                // disconnected, exit
-                                Err(sync::mpsc::TryRecvError::Disconnected) => {
-                                    debug!("exiting read thread on disconnect");
-                                    return;
-                                }
-
-                                // still empty
-                                Err(_) => { }
-                            }
-                        }
-                        // yield a new request if we have one
-                        let ret_req = match new_req {
-                            Some(req) => { req },
+                        // either service a readahead request, or wait for a read.
+                        match readahead.pop_front() {
+                            Some(offset) => FileReadRequest{offset: offset, size: chunk_size as u32, reply: None},
                             None => {
-                                //  otherwise we can block until one comes in
+                                // no readahead, just block for the next request.
                                 match rx.recv() {
                                     Ok(req) => { req }
                                     Err(_) => {
@@ -203,9 +191,7 @@ impl FileReadHandle {
                                     }
                                 }
                             }
-                        };
-                        // yield the new request
-                        ret_req
+                        }
                     }
                 };
                 
@@ -214,16 +200,19 @@ impl FileReadHandle {
                 let chunk_offset = (req.offset / chunk_size) * chunk_size;
                 if (req.offset + req.size as u64) > (chunk_offset + chunk_size) {
                     error!("cross chunk read not supported");
-                    req.reply.error(libc::ENOSYS);
+                    req.error(libc::ENOSYS);
                     continue;
                 }
 
                 if !buf_cache.contains_key(&chunk_offset) {
-                    // cache miss. Either the readahead isn't keeping up,
-                    // or we're seeking within the file. Either way, we
-                    // should clear the readahead queue.
-                    debug!("file: {}, cache miss, clearing readahead", url);
-                    readahead.clear();
+                    // cache miss. If we're responding to a user request, then
+                    // the readahead queue isn't keeping up, or we're seeking
+                    // within the file. Either way, we should clear the
+                    // readahead queue.
+                    if !req.is_readahead() {
+                        debug!("file: {}, cache miss, clearing readahead", url);
+                        readahead.clear();
+                    }
                     let mut buf = buf_cache.take().unwrap();
                     buf.clear();
                     match reader.read_bytes(chunk_offset, chunk_size, &mut buf) {
@@ -233,10 +222,14 @@ impl FileReadHandle {
                         Err(err) => {
                             error!("Read error for url: {} : {:?}", url, err);
                             buf_cache.put(buf);
-                            req.reply.error(libc::EIO);
+                            req.error(libc::EIO);
                             continue;
                         }
                     }
+                }
+                // if this just was a readahead request, then we're done.
+                if req.is_readahead() {
+                    continue;
                 }
 
                 {
@@ -245,7 +238,7 @@ impl FileReadHandle {
                     let start: usize = (req.offset - chunk_offset) as usize;
                     let end: usize = start + req.size as usize;
                     let slice = &chunk_data[start..end];
-                    req.reply.data(slice);
+                    req.data(slice);
                 }
 
                 // schedule readahead.
@@ -256,7 +249,7 @@ impl FileReadHandle {
                     }
                     readahead_offset += chunk_size;
                 }
-            }
+            }  // loop
 
         }).unwrap();
         // return the read handle.
