@@ -146,7 +146,6 @@ impl std::convert::From<google_drive2::File> for GoogleFile {
       file_name: api_file.title.unwrap_or("__UNKNOWN_FILE_NAME__".into()),
       file_download_url: api_file.download_url.unwrap_or("".into()),
       file_attr: attr,
-
     }
   }
 }
@@ -172,6 +171,10 @@ impl GoogleFileTree {
     };
     tree.insert_node(None, root_gfile);
     tree
+  }
+
+  fn file_count(&self) -> u64 {
+      self.file_attrs.len() as u64
   }
 
   fn get_file(&self, inode: &u64) -> Option<&GoogleFile> {
@@ -299,7 +302,8 @@ impl GDriveFS {
 impl fuse::Filesystem for GDriveFS {
 
   fn statfs(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyStatfs) {
-      reply.statfs(0, 0, 0, 0, 0, constants::BLOCK_SIZE, 256, 0); 
+      let tree = self.file_tree.read().unwrap();
+      reply.statfs(0, 0, 0, tree.file_count(), 0, constants::BLOCK_SIZE, 256, 0); 
   }
 
   fn lookup(&mut self, _req: &fuse::Request, parent: u64, name: &OsStr,
