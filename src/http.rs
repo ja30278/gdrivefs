@@ -5,6 +5,7 @@ extern crate poolcache;
 
 use constants;
 use oauth;
+use common;
 use oauth::GetToken;
 use std::collections::VecDeque;
 use std::convert::From;
@@ -15,7 +16,7 @@ use std::sync;
 
 // RangeReader reads byte ranges from an http url
 struct RangeReader {
-  client: hyper::client::Client,
+  client: hyper::Client,
   authenticator: oauth::GoogleAuthenticator,
   file_url: String,
 }
@@ -23,7 +24,7 @@ struct RangeReader {
 impl RangeReader {
   fn new(file_url: &str, authenticator: oauth::GoogleAuthenticator) -> RangeReader {
     RangeReader {
-      client: hyper::client::Client::new(),
+      client: common::new_hyper_tls_client(),
       authenticator: authenticator,
       file_url: file_url.into(),
     }
@@ -46,9 +47,7 @@ impl RangeReader {
       warn!("Read error result: {}", err);
       return Err(Box::new(hyper::error::Error::Status));
     }
-    debug!("got response, getting ready to read range data");
     try!(resp.read_to_end(buf));
-    debug!("read range data, returning");
     Ok(())
   }
 
@@ -156,8 +155,6 @@ impl FileReadHandle {
             let chunk_size : u64 = constants::BLOCK_SIZE as u64 * read_block_multiplier as u64;
 
             // buffer cache
-            //
-            //let mut buf_cache = BufferCache::new(cache_size as usize, chunk_size as usize);
             let mut buf_cache = poolcache::PoolCache::new(10);
             for _ in 0..cache_size {
                 buf_cache.put(Vec::with_capacity(chunk_size as usize));

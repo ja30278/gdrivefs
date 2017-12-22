@@ -1,12 +1,12 @@
 extern crate docopt;
 extern crate gdrivefs;
-extern crate hyper;
 extern crate inth_oauth2;
 extern crate rustc_serialize;
 
 use std::default::Default;
 use std::io;
 use gdrivefs::oauth;
+use gdrivefs::common;
 
 // see: https://developers.google.com/identity/protocols/googlescopes
 const DRIVE_SCOPE : &'static str = "https://www.googleapis.com/auth/drive";
@@ -52,7 +52,7 @@ fn main() {
   io::stdin().read_line(&mut code).unwrap();
   println!("got code: {}, requesting token", code);
 
-  let http_client = Default::default();
+  let http_client = common::new_hyper_tls_client();
   let token = client.request_token(&http_client, &code).unwrap();
   oauth::save_token(&args.flag_token_file, &token).unwrap();
   println!("Saved token in {}", args.flag_token_file);

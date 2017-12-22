@@ -1,4 +1,6 @@
 extern crate libc;
+extern crate hyper;
+extern crate hyper_rustls;
 
 use std;
 use std::os::unix::fs::OpenOptionsExt;
@@ -19,4 +21,10 @@ pub fn set_contents(path: &str, contents: &[u8], mode: libc::mode_t) -> std::io:
   let mut f = try!(std::fs::OpenOptions::new().write(true).create(true).mode(mode as u32).open(path));
   try!(f.write_all(contents));
   Ok(())
+}
+
+pub fn new_hyper_tls_client() -> hyper::Client {
+    hyper::Client::with_connector(
+        hyper::net::HttpsConnector::new(
+            hyper_rustls::TlsClient::new()))
 }

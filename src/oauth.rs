@@ -2,7 +2,7 @@ extern crate hyper;
 extern crate libc;
 extern crate log;
 extern crate inth_oauth2;
-extern crate rustc_serialize;
+extern crate serde_json;
 extern crate yup_oauth2;
 
 use std;
@@ -25,14 +25,14 @@ pub fn new_google_client(client_id : &str, client_secret: &str, auth_url: Option
 pub fn load_token(path : &str) -> std::io::Result<GoogleToken> {
   common::get_contents(path)
     .and_then(|data| {
-        rustc_serialize::json::decode(&data)
+        serde_json::from_str(&data)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
   })
 }
 
 // serialize and save a GoogleToken to a file.
 pub fn save_token(path: &str, tok : &GoogleToken) -> std::io::Result<()> {
-  rustc_serialize::json::encode(tok)
+  serde_json::to_string(tok)
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
     .and_then(|encoded| common::set_contents(path, encoded.as_bytes(), 0o600 as libc::mode_t))
 }

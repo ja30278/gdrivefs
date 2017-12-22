@@ -1,20 +1,22 @@
 [package]
 name = "gdrivefs"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["jonallie"]
 
 [dependencies]
 docopt = "0.6"
 env_logger = "0.3"
-fuse = { git = "https://github.com/zargony/rust-fuse" }
-google-drive2 = "*"
-hyper = "0.9"
-inth-oauth2 = "0.10"
+fuse = "0.3.1"
+google-drive3 = "1.0.7"
+hyper = "=0.10.13"
+hyper-rustls = "=0.6.1"
+inth-oauth2 = "=0.12"
 libc = "0.2"
 log = "0.3"
 rustc-serialize = "0.3"
+serde_json = "1.0.8"
 threadpool = "0.2.1"
-time = "0.1"
+time = "0.1.38"
 urlparse = "0.7"
-yup-oauth2 = "1.0"
+yup-oauth2 = "=1.0.6"
 poolcache = "0.1"
