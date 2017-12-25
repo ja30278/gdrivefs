@@ -51,7 +51,7 @@ impl GoogleAuthenticatorImpl {
              initial_token: GoogleToken)
              -> GoogleAuthenticatorImpl {
     GoogleAuthenticatorImpl {
-      http_client: hyper::client::Client::new(),
+      http_client: common::new_hyper_tls_client(),
       oauth_client: oauth_client,
       inth_token: initial_token,
     }
