@@ -1,7 +1,9 @@
 extern crate docopt;
 extern crate gdrivefs;
 extern crate inth_oauth2;
-extern crate rustc_serialize;
+
+#[macro_use]
+extern crate serde_derive;
 
 use gdrivefs::common;
 use gdrivefs::oauth;
@@ -28,7 +30,7 @@ Options:
   --token-file=<token_file>           Token output file. [default: /etc/gdrive_token]
 ";
 
-#[derive(Debug, RustcEncodable, RustcDecodable)]
+#[derive(Debug, Deserialize)]
 struct Args {
   flag_client_id_file: String,
   flag_client_secret_file: String,
@@ -37,7 +39,7 @@ struct Args {
 
 fn main() {
   let args: Args = docopt::Docopt::new(USAGE)
-    .and_then(|d| d.decode())
+    .and_then(|d| d.deserialize())
     .unwrap_or_else(|e| e.exit());
 
   let client = oauth::new_google_client(

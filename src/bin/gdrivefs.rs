@@ -5,7 +5,8 @@ extern crate fuse;
 extern crate gdrivefs;
 #[macro_use]
 extern crate log;
-extern crate rustc_serialize;
+#[macro_use]
+extern crate serde_derive;
 extern crate time;
 
 use gdrivefs::oauth;
@@ -39,7 +40,7 @@ Options:
   --read-block-multiplier=<mult>      Number of 4k blocks to read per HTTP request. [default: 2048]
 ";
 
-#[derive(Debug, RustcDecodable)]
+#[derive(Debug, Deserialize)]
 struct Args {
   flag_client_id_file: String,
   flag_client_secret_file: String,
@@ -56,7 +57,7 @@ fn main() {
   env_logger::init().unwrap();
 
   let args: Args = docopt::Docopt::new(USAGE)
-    .and_then(|d| d.decode())
+    .and_then(|d| d.deserialize())
     .unwrap_or_else(|e| e.exit());
 
   info!("Got args: {:?}", args);
