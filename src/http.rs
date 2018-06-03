@@ -7,6 +7,7 @@ use common;
 use constants;
 use oauth;
 use oauth::GetToken;
+use std::cmp;
 use std::collections::VecDeque;
 use std::convert::From;
 use std::error::Error;
@@ -250,7 +251,7 @@ impl FileReadHandle {
             // scope for block cache borrow.
             let chunk_data: &Vec<u8> = buf_cache.get(&chunk_offset).unwrap();
             let start: usize = (req.offset - chunk_offset) as usize;
-            let end: usize = start + req.size as usize;
+            let end: usize = cmp::min(start + req.size as usize, chunk_data.len() - 1);
             let slice = &chunk_data[start..end];
             req.data(slice);
           }
