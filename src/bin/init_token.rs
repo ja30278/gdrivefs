@@ -19,8 +19,10 @@ init_token: fetch and store an oauth2 token for gdrivefs.
 
 Usage:
   init_token [--client-id-file=<id_file>] [--client-secret-file=<secret_file>] [--token-file=<token_file>]  [--port=<port>]
+  init_token (-h | --help)
 
 Options:
+  -h --help                           Show this screen.
   --client-id-file=<id_file>          File containing a client id [default: /usr/local/etc/gdrive_id]
   --client-secret-file=<secret_file>  File containing a client secret. [default: /usr/local/etc/gdrive_secret]
   --token-file=<token_file>           Token output file. [default: /etc/gdrive_token]
