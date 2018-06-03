@@ -4,7 +4,7 @@ name = "gdrivefs"
 version = "0.1.1"
 [dependencies]
 docopt = "1.0.0"
-env_logger = "0.3"
+env_logger = "0.5.10"
 fuse = "0.3.1"
 google-drive3 = "1.0.7+20171201"
 hyper = "0.10"
