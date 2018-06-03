@@ -5,7 +5,6 @@ extern crate rustc_serialize;
 
 use gdrivefs::common;
 use gdrivefs::oauth;
-use std::default::Default;
 use std::io;
 
 // see: https://developers.google.com/identity/protocols/googlescopes
@@ -38,24 +37,37 @@ fn main() {
   let args: Args = docopt::Docopt::new(USAGE)
     .and_then(|d| d.decode())
     .unwrap_or_else(|e| e.exit());
+
   let client = oauth::new_google_client(
-    &gdrivefs::get_contents(&args.flag_client_id_file).unwrap(),
-    &gdrivefs::get_contents(&args.flag_client_secret_file).unwrap(),
+    &gdrivefs::get_contents(&args.flag_client_id_file).expect(&format!(
+      "Error while getting content of file: {}",
+      &args.flag_client_id_file
+    )),
+    &gdrivefs::get_contents(&args.flag_client_secret_file).expect(&format!(
+      "Error while getting content of file: {}",
+      &args.flag_client_secret_file
+    )),
     Some(OOB_AUTH_URI.into()),
   );
 
   println!("Please visit the following URL to grant the required permissions");
   println!("Then paste the returned code below.");
-  let auth_uri = client.auth_uri(Some(DRIVE_SCOPE), None).unwrap();
+  let auth_uri = client
+    .auth_uri(Some(DRIVE_SCOPE), None)
+    .expect("Error while constructing URI");
   println!("{}", auth_uri);
   println!("Code: ");
 
   let mut code: String = String::new();
-  io::stdin().read_line(&mut code).unwrap();
+  io::stdin()
+    .read_line(&mut code)
+    .expect("Could not read line from stdin");
   println!("got code: {}, requesting token", code);
 
   let http_client = common::new_hyper_tls_client();
-  let token = client.request_token(&http_client, &code).unwrap();
-  oauth::save_token(&args.flag_token_file, &token).unwrap();
+  let token = client
+    .request_token(&http_client, &code)
+    .expect("Error while requesting token");
+  oauth::save_token(&args.flag_token_file, &token).expect(&format!("Error while saving token to file: {}", &args.flag_token_file));
   println!("Saved token in {}", args.flag_token_file);
 }

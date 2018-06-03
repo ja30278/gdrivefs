@@ -25,7 +25,6 @@ enabling readahead can help on lower-memory systems where the OS chooses
 not to do its own readahead on sequential reads, but can actually slow
 down performance markedly on systems that perform their own readahead.
 
-
 Options:
   --client-id-file=<id_file>          Path to a file containing the oauth2 client id. [default: /usr/local/etc/gdrive_id]
   --client-secret-file=<secret_file>  Path to a file containing the oauth2 client secret. [default: /usr/local/etc/gdrive_secret]
@@ -52,24 +51,36 @@ struct Args {
 
 fn main() {
   env_logger::init().unwrap();
+
   let args: Args = docopt::Docopt::new(USAGE)
     .and_then(|d| d.decode())
     .unwrap_or_else(|e| e.exit());
+
+  info!("Got args: {:?}", args);
+
   let client = oauth::new_google_client(
-    &gdrivefs::get_contents(&args.flag_client_id_file).unwrap(),
-    &gdrivefs::get_contents(&args.flag_client_secret_file).unwrap(),
-    None,
+    &gdrivefs::get_contents(&args.flag_client_id_file).expect(&format!(
+      "Error while getting content of file: {}",
+      &args.flag_client_id_file
+    )),
+    &gdrivefs::get_contents(&args.flag_client_secret_file).expect(&format!(
+      "Error while getting content of file: {}",
+      &args.flag_client_secret_file
+    )),
+    None
   );
 
   let authenticator = oauth::GoogleAuthenticator::from_file(client, &args.flag_token_file).unwrap();
   authenticator.start_auto_save(&args.flag_token_file, std::time::Duration::new(60, 0));
 
   println!("Mounting drive fs at {:?}", args.arg_mountpoint);
+
   let options = gdrivefs::FileReadOptions {
     readahead_queue_size: args.flag_readahead_queue_size,
     file_read_cache_blocks: args.flag_file_read_cache_blocks,
     read_block_multiplier: args.flag_read_block_multiplier,
   };
+
   let driveimpl = gdrivefs::GDriveFS::new(authenticator, options);
   if args.flag_dir_poll_secs > 0 {
     driveimpl.start_auto_refresh(std::time::Duration::new(args.flag_dir_poll_secs as u64, 0));
@@ -80,5 +91,8 @@ fn main() {
     driveimpl,
     &args.arg_mountpoint,
     &[std::ffi::OsStr::new("-oallow_other")],
-  );
+  ).expect(&format!(
+    "Could not mount fuse filesystem at {}",
+    &args.arg_mountpoint
+  ));
 }

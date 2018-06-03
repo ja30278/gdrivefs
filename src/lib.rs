@@ -211,6 +211,7 @@ impl GoogleFileTree {
 type DriveHub = google_drive3::Drive<hyper::client::Client, oauth::GoogleAuthenticator>;
 
 fn list_gdrive_dir(gfile_id: &str, hub: &mut DriveHub) -> Result<Vec<GoogleFile>, Box<Error>> {
+  debug!("In list_gdrive_dir({}, …)", gfile_id);
   let mut file_vec: Vec<GoogleFile> = Vec::new();
   let mut page_token: Option<String> = None;
   loop {
@@ -224,16 +225,30 @@ fn list_gdrive_dir(gfile_id: &str, hub: &mut DriveHub) -> Result<Vec<GoogleFile>
       .q(&format!("'{}' in parents and trashed = false", gfile_id))
       .order_by("name")
       .page_size(500);
+
     if let Some(ref token) = page_token {
       list_op = list_op.page_token(token);
     }
-    let (_, file_list) = try!(list_op.doit());
+
+    let file_list = match list_op.doit() {
+      Ok((_, l)) => l,
+      Err(e) => {
+        warn!(
+          "Error while evaluating list_gdrive_dir({}, …): {}",
+          gfile_id, e
+        );
+        return Err(Box::new(e));
+      }
+    };
+
     page_token = file_list.next_page_token;
+
     if let Some(files) = file_list.files {
       for file in files {
         file_vec.push(GoogleFile::from(file));
       }
     }
+
     if page_token.is_none() {
       break;
     }
@@ -267,6 +282,7 @@ impl GDriveFS {
   /// Starts a background thread that will periodically refresh filesystem
   /// metadata at |interval|.
   pub fn start_auto_refresh(&self, interval: std::time::Duration) {
+    debug!("In start_auto_refresh(…)");
     let auth = self.authenticator.clone();
     let tree = self.file_tree.clone();
     thread::Builder::new()
@@ -332,6 +348,7 @@ impl fuse::Filesystem for GDriveFS {
   }
 
   fn getattr(&mut self, _req: &fuse::Request, ino: u64, reply: fuse::ReplyAttr) {
+    debug!("getattr(ino:{})", ino);
     match self.file_tree.read().unwrap().get_file(&ino) {
       Some(attr) => {
         reply.attr(&TTL, &attr.file_attr);
@@ -355,8 +372,7 @@ impl fuse::Filesystem for GDriveFS {
     let auth = self.authenticator.clone();
     self.list_dir_pool.execute(move || {
       let mut fileid = String::new();
-      let mut has_children = false;
-      {
+      let has_children = {
         let tree = file_tree.read().unwrap();
         match tree.get_file(&ino) {
           Some(attr) => {
@@ -371,8 +387,8 @@ impl fuse::Filesystem for GDriveFS {
             return;
           }
         }
-        has_children = tree.has_children(&ino);
-      }
+        tree.has_children(&ino)
+      };
       // need to list the directory
       if !has_children {
         let mut hub = google_drive3::Drive::new(common::new_hyper_tls_client(), auth);
