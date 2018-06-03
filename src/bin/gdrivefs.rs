@@ -10,7 +10,6 @@ extern crate time;
 
 use gdrivefs::oauth;
 
-
 const USAGE: &'static str = "
 gdrivefs: A fuse filesystem backed by Google Drive.
 
@@ -51,14 +50,16 @@ struct Args {
   arg_mountpoint: String,
 }
 
-
 fn main() {
   env_logger::init().unwrap();
-  let args: Args = docopt::Docopt::new(USAGE).and_then(|d| d.decode()).unwrap_or_else(|e| e.exit());
-  let client = oauth::new_google_client(&gdrivefs::get_contents(&args.flag_client_id_file).unwrap(),
-                                        &gdrivefs::get_contents(&args.flag_client_secret_file)
-                                           .unwrap(),
-                                        None);
+  let args: Args = docopt::Docopt::new(USAGE)
+    .and_then(|d| d.decode())
+    .unwrap_or_else(|e| e.exit());
+  let client = oauth::new_google_client(
+    &gdrivefs::get_contents(&args.flag_client_id_file).unwrap(),
+    &gdrivefs::get_contents(&args.flag_client_secret_file).unwrap(),
+    None,
+  );
 
   let authenticator = oauth::GoogleAuthenticator::from_file(client, &args.flag_token_file).unwrap();
   authenticator.start_auto_save(&args.flag_token_file, std::time::Duration::new(60, 0));
@@ -75,5 +76,9 @@ fn main() {
   }
 
   // todo(jonallie): figure out how to make this the default using docopt.
-  fuse::mount(driveimpl, &args.arg_mountpoint, &[std::ffi::OsStr::new("-oallow_other")]);
+  fuse::mount(
+    driveimpl,
+    &args.arg_mountpoint,
+    &[std::ffi::OsStr::new("-oallow_other")],
+  );
 }

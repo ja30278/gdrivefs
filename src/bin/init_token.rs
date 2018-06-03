@@ -3,18 +3,17 @@ extern crate gdrivefs;
 extern crate inth_oauth2;
 extern crate rustc_serialize;
 
+use gdrivefs::common;
+use gdrivefs::oauth;
 use std::default::Default;
 use std::io;
-use gdrivefs::oauth;
-use gdrivefs::common;
 
 // see: https://developers.google.com/identity/protocols/googlescopes
-const DRIVE_SCOPE : &'static str = "https://www.googleapis.com/auth/drive";
+const DRIVE_SCOPE: &'static str = "https://www.googleapis.com/auth/drive";
 
 // the auth URI used for the 'application' auth flow.
 // see: https://developers.google.com/identity/protocols/OAuth2InstalledApp#choosingredirecturi
 const OOB_AUTH_URI: &'static str = "urn:ietf:wg:oauth:2.0:oob";
-
 
 const USAGE: &'static str = "
 init_token: fetch and store an oauth2 token for gdrivefs.
@@ -36,11 +35,14 @@ struct Args {
 }
 
 fn main() {
-  let args: Args = docopt::Docopt::new(USAGE).and_then(|d| d.decode()).unwrap_or_else(|e| e.exit());
+  let args: Args = docopt::Docopt::new(USAGE)
+    .and_then(|d| d.decode())
+    .unwrap_or_else(|e| e.exit());
   let client = oauth::new_google_client(
-      &gdrivefs::get_contents(&args.flag_client_id_file).unwrap(),
-      &gdrivefs::get_contents(&args.flag_client_secret_file).unwrap(),
-      Some(OOB_AUTH_URI.into()));
+    &gdrivefs::get_contents(&args.flag_client_id_file).unwrap(),
+    &gdrivefs::get_contents(&args.flag_client_secret_file).unwrap(),
+    Some(OOB_AUTH_URI.into()),
+  );
 
   println!("Please visit the following URL to grant the required permissions");
   println!("Then paste the returned code below.");
