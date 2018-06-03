@@ -62,6 +62,8 @@ fn main() {
   io::stdin()
     .read_line(&mut code)
     .expect("Could not read line from stdin");
+  let code_len = code.trim_right().len();
+  code.truncate(code_len);
   println!("got code: {}, requesting token", code);
 
   let http_client = common::new_hyper_tls_client();

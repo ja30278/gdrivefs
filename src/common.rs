@@ -13,6 +13,8 @@ pub fn get_contents(path: &str) -> std::io::Result<String> {
   let mut f = try!(std::fs::File::open(can_path.as_path()));
   let mut buf = String::new();
   try!(f.read_to_string(&mut buf));
+  let n = buf.trim_right().len();
+  buf.truncate(n);
   Ok(buf)
 }
 
