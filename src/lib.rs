@@ -398,6 +398,9 @@ impl fuse::Filesystem for GDriveFS {
           return;
         }
         let mut tree = file_tree.write().unwrap();
+        // clear_children in case we were interleaved with another list that
+        // finished while we were listing.t
+        tree.clear_children(&ino);
         for file in result.unwrap() {
           tree.insert_node(Some(ino), file);
         }
